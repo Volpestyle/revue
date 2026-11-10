@@ -128,7 +128,7 @@ impl Tabs {
                     self.cycling = Tabs::hold(false);
                 }
             }
-            Event::Key(key) if key.kind == KeyEventKind::Press && key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('\\' | '4')) => self.close_active(),
+            Event::Key(key) if key.kind == KeyEventKind::Press && key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('\\' | '4' | '/' | '7')) => self.close_active(),
             Event::Key(key) if key.kind == KeyEventKind::Press && !matches!(key.code, KeyCode::Modifier(_)) => {
                 (self.selection, self.copied) = (None, None);
                 let switch = key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL);

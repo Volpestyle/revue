@@ -30,6 +30,19 @@ fn color(color: vt100::Color) -> Color {
     }
 }
 
+pub fn control(c: char) -> u8 {
+    match c {
+        '2' | ' ' | '@' => 0x00,
+        '3' | '[' => 0x1b,
+        '4' | '\\' => 0x1c,
+        '5' | ']' => 0x1d,
+        '6' | '^' => 0x1e,
+        '7' | '/' | '_' | '-' => 0x1f,
+        '8' | '?' => 0x7f,
+        c => c.to_ascii_lowercase() as u8 & 0x1f,
+    }
+}
+
 impl Term {
     pub fn spawn(command: &std::process::Command, rows: u16, cols: u16) -> Result<Term, String> {
         let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
@@ -118,7 +131,7 @@ impl Term {
             bytes.push(0x1b);
         }
         let sequence: &[u8] = match key.code {
-            KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => &[c.to_ascii_lowercase() as u8 & 0x1f],
+            KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => &[control(c)],
             KeyCode::Char(c) => &c.to_string().into_bytes(),
             KeyCode::Enter => b"\r",
             KeyCode::Esc => b"\x1b",

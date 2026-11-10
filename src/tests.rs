@@ -401,3 +401,12 @@ fn a_recording_picks_its_frame_from_the_play_clock() {
     assert_eq!(frame_at(3.05, None), 30);
     assert_eq!((clock(3.9), clock(68.0)), ("0:03".to_string(), "1:08".to_string()));
 }
+
+#[test]
+fn control_keys_reach_a_tab_as_the_byte_a_terminal_sends() {
+    use crate::term::control;
+    assert_eq!((control('c'), control('Q')), (0x03, 0x11));
+    assert_eq!((control('\\'), control('4')), (0x1c, 0x1c));
+    assert_eq!((control('/'), control('7'), control('_')), (0x1f, 0x1f, 0x1f));
+    assert_eq!((control(' '), control('['), control(']')), (0x00, 0x1b, 0x1d));
+}
