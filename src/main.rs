@@ -3375,6 +3375,7 @@ pub fn review(terminal: &mut DefaultTerminal, bundle: Bundle, images: Picker, ta
     let mut redraw = true;
     let mut queued: Option<Event> = None;
     let mut covered = false;
+    let mut configuring = false;
     loop {
         if covered != (app.layered() && app.evidence_path().is_some()) {
             covered = !covered;
@@ -3391,9 +3392,9 @@ pub fn review(terminal: &mut DefaultTerminal, bundle: Bundle, images: Picker, ta
         if let Some(text) = app.tabs.clipboard.take() {
             copy(&text);
         }
-        let settings = app.tabs.has("settings");
         let failed = app.tabs.tick();
-        if settings && !app.tabs.has("settings") {
+        let settings = app.tabs.has("settings");
+        if std::mem::replace(&mut configuring, settings) && !settings {
             mrs::apply_accent();
         }
         for name in failed {

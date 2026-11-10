@@ -755,6 +755,7 @@ enum Entry {
 #[derive(Default)]
 struct MrList {
     tabs: crate::Tabs,
+    configuring: bool,
     busy: Option<String>,
     palette: Option<(String, usize)>,
     palette_cursor: usize,
@@ -1161,11 +1162,12 @@ pub fn browse(terminal: &mut DefaultTerminal, images: Picker) -> io::Result<()> 
     loop {
         list.absorb();
         crate::fade(&mut list.message);
-        let (shown, settings) = (list.tabs.shown, list.tabs.has("settings") || list.tabs.has("setup"));
+        let shown = list.tabs.shown;
         for name in list.tabs.tick() {
             list.message = format!("{name} exited right away with an error. Check its command in the config.");
         }
-        if settings && !(list.tabs.has("settings") || list.tabs.has("setup")) {
+        let configuring = list.tabs.has("settings") || list.tabs.has("setup");
+        if std::mem::replace(&mut list.configuring, configuring) && !configuring {
             list.load();
         }
         if redraw || shown != list.tabs.shown {
