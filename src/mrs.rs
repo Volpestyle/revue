@@ -92,7 +92,7 @@ pub fn drive_report(bundle: Option<&Path>) -> String {
     out += &format!("  not found: {}\n", if missing.is_empty() { "nothing".to_string() } else { missing.join(", ") });
     let repo = bundle.and_then(|dir| Bundle::load(dir).ok()).and_then(|bundle| bundle.review.sources.first().map(|source| source.repo.clone()));
     if let Some(repo) = repo.filter(|repo| !repo.is_empty()) {
-        let notes = home().join(".local/share/revui/notes").join(format!("{}.md", repo.replace('/', "__")));
+        let notes = data_dir().join("notes").join(format!("{}.md", repo.replace('/', "__")));
         let text = fs::read_to_string(&notes).unwrap_or_default();
         out += &format!("\nNotes for {repo} ({}):\n{}\n", notes.display(), if text.trim().is_empty() { "none yet: append what you learn" } else { text.trim() });
     }
@@ -357,8 +357,20 @@ pub fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_default())
 }
 
+/// Where bundles, notes and pane sizes live. `REVUI_HOME` moves this and the config
+/// into one folder, for a second setup or a sandbox that must not touch the real one.
+pub fn data_dir() -> PathBuf {
+    match std::env::var("REVUI_HOME").ok().filter(|dir| !dir.is_empty()) {
+        Some(dir) => PathBuf::from(dir).join("data"),
+        None => home().join(".local/share/revui"),
+    }
+}
+
 fn config_path() -> PathBuf {
-    home().join(".config/revui/config.json")
+    match std::env::var("REVUI_HOME").ok().filter(|dir| !dir.is_empty()) {
+        Some(dir) => PathBuf::from(dir).join("config.json"),
+        None => home().join(".config/revui/config.json"),
+    }
 }
 
 fn cli(program: &str, args: &[&str]) -> Result<String, String> {
@@ -641,7 +653,7 @@ impl Mr {
 
     fn dir(&self) -> PathBuf {
         let sha = &self.sha()[..self.sha().len().min(8)];
-        home().join(".local/share/revui").join(format!("{}-{}-{sha}", self.repo().replace('/', "__"), self.iid))
+        data_dir().join(format!("{}-{}-{sha}", self.repo().replace('/', "__"), self.iid))
     }
 
     fn matches(&self, filter: &str) -> bool {

@@ -9,8 +9,6 @@
   <img src="docs/demo.gif" alt="A tour of revui" width="900">
 </p>
 
-<p align="center"><a href="docs/demo.mp4">Watch the demo in full quality</a></p>
-
 `revui` is a terminal viewer for guided code reviews. It lists your open GitLab
 merge requests and GitHub pull requests, opens one as a diff, and when an agent
 has written a guide for it, walks you through the change in reading order: the
@@ -60,6 +58,9 @@ GitHub the default. `groups` lists every project under a GitLab group. Any merge
 request or pull request also opens by URL with `revui fetch <url>`, listed or not.
 
 `revui doctor` says what is still missing, and `,` inside revui opens the config.
+
+`REVUI_HOME=<dir>` keeps the config and all data in that one folder instead, for
+a second setup or a sandbox.
 
 ## Using it
 

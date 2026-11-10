@@ -60,7 +60,7 @@ impl Panes {
     }
 
     fn path() -> PathBuf {
-        mrs::home().join(".local/share/revui/panes.json")
+        mrs::data_dir().join("panes.json")
     }
 
     fn load() -> Panes {
@@ -84,7 +84,7 @@ impl Panes {
         if cfg!(test) {
             return;
         }
-        let _ = std::fs::create_dir_all(mrs::home().join(".local/share/revui"));
+        let _ = std::fs::create_dir_all(mrs::data_dir());
         let _ = std::fs::write(Panes::path(), serde_json::to_string(self).unwrap_or_default());
     }
 }
