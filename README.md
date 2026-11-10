@@ -148,4 +148,4 @@ A guide is a plain directory. revui only reads it, so anything can write one:
     revui fetch <url>     make or find the bundle for one, listed or not
     revui help            every command
 
-<sub>The wordmark is set in <a href="https://github.com/ahatem/IoskeleyMono">Ioskeley Mono</a> (OFL-1.1).</sub>
+<sub>The wordmark is set in <a href="https://github.com/vercel/geist-font">Geist Mono</a> (OFL-1.1).</sub>
