@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.png">
-    <img src="docs/logo-light.png" alt="revui: guided code review, in your terminal" width="560">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
+    <img src="docs/logo-light.svg" alt="revui: guided code review" width="560">
   </picture>
 </p>
 
@@ -153,4 +153,4 @@ A guide is a plain directory. revui only reads it, so anything can write one:
     revui fetch <url>     make or find the bundle for one, listed or not
     revui help            every command
 
-<sub>The wordmark is set in <a href="https://github.com/ahatem/IoskeleyMono">Ioskeley Mono</a> (OFL-1.1).</sub>
+<sub>The wordmark is set in <a href="https://vercel.com/font">Geist Mono</a> (OFL-1.1).</sub>
