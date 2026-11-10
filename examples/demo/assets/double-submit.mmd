@@ -1,0 +1,12 @@
+sequenceDiagram
+    participant C as Checkout client
+    participant A as Orders API
+    participant D as Database
+    C->>A: POST /orders
+    A->>D: insert order 10482
+    A--xC: response lost (timeout)
+    Note over C: retry after backoff
+    C->>A: POST /orders (same cart, no idempotency key)
+    A->>D: insert order 10483
+    A-->>C: 201 Created
+    Note over C,D: one checkout, two orders, charged twice

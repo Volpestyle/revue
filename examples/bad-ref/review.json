@@ -1,0 +1,5 @@
+{
+  "title": "Bad reference",
+  "sources": [{ "id": "mr-1", "head_sha": "5d6e7f8a9b0c", "patch": "mr.patch" }],
+  "sections": [{ "title": "Ghost", "why": "Cites a file the diff does not touch.", "hunks": [{ "file": "src/ghost.ts" }] }]
+}

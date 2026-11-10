@@ -1,0 +1,86 @@
+{
+  "title": "Retry order submission",
+  "summary": "Wraps the order submit call in a three-attempt retry with backoff, so a brief upstream outage no longer fails checkout.",
+  "sources": [
+    {
+      "id": "mr-1",
+      "url": "https://example.com/mr/1",
+      "head_sha": "5d6e7f8a9b0c",
+      "patch": "mr.patch"
+    }
+  ],
+  "sections": [
+    {
+      "title": "Retry the submit call",
+      "tier": "core",
+      "why": "A failed POST is retried up to three times with exponential backoff. Check what happens when the first POST succeeded upstream but its response was lost.",
+      "hunks": [
+        {
+          "file": "src/submit.ts",
+          "hunk": 0
+        }
+      ]
+    },
+    {
+      "title": "Sleep helper",
+      "tier": "supporting",
+      "why": "The backoff needs a promise-based delay.",
+      "hunks": [
+        {
+          "file": "src/sleep.ts"
+        }
+      ]
+    }
+  ],
+  "items": [
+    {
+      "id": "B1",
+      "kind": "finding",
+      "severity": "blocker",
+      "section": 0,
+      "title": "A retry can create the order twice",
+      "body": "The POST carries no idempotency key. If the upstream commits the order and the response times out, the retry posts it again and the customer is charged twice.",
+      "at": {
+        "file": "src/submit.ts",
+        "line": 11
+      },
+      "evidence": [
+        {
+          "provenance": "observed",
+          "caption": "Orders list after one checkout with the first response dropped: two orders",
+          "path": "assets/duplicate-orders.png",
+          "repro": "make local-up && DROP_FIRST_RESPONSE=1 npm run e2e -- checkout"
+        },
+        {
+          "provenance": "inferred",
+          "caption": "Sequence of the double submit",
+          "text": "client -> api: POST /orders\napi -> db: insert order 1\napi -x client: response lost\nclient -> api: POST /orders (retry)\napi -> db: insert order 2",
+          "path": "assets/double-submit.png",
+          "repro": "revui diagram assets/double-submit.mmd assets/double-submit.png"
+        }
+      ]
+    },
+    {
+      "id": "D1",
+      "kind": "decision",
+      "section": 0,
+      "title": "Every error is retried, including 4xx",
+      "body": "The ticket says to retry on outage. The change retries on any thrown error, so a validation failure is sent three times before the user sees it. Nothing in the ticket decides this.",
+      "at": {
+        "file": "src/submit.ts",
+        "line": 15
+      }
+    },
+    {
+      "id": "G1",
+      "kind": "good",
+      "section": 1,
+      "title": "The delay is injectable, so tests don't wait",
+      "body": "sleep is its own module, so the retry test swaps it for a no-op and runs in milliseconds.",
+      "at": {
+        "file": "src/sleep.ts",
+        "line": 1
+      }
+    }
+  ]
+}
