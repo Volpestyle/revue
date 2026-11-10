@@ -1428,10 +1428,17 @@ pub fn review(terminal: &mut DefaultTerminal, bundle: Bundle, images: Picker, ta
     let mut redraw = true;
     let mut queued: Option<Event> = None;
     let mut covered = false;
+    let mut pictured = (false, None);
     let mut configuring = false;
     loop {
         if covered != (app.layered() && app.evidence_path().is_some()) {
             covered = !covered;
+            terminal.clear()?;
+            redraw = true;
+        }
+        let shown = (app.zoom, app.evidence_path());
+        if shown != pictured {
+            pictured = shown;
             terminal.clear()?;
             redraw = true;
         }
