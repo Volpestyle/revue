@@ -1936,7 +1936,7 @@ fn detail(app: &App, width: usize) -> Rows {
     };
     let (label, color) = match (item.kind, item.severity.as_str()) {
         (Kind::Finding, "blocker") => ("Blocker", Color::Red),
-        (Kind::Finding, "fix") => ("Should fix", Color::Rgb(230, 140, 60)),
+        (Kind::Finding, "fix" | "should fix") => ("Should fix", Color::Rgb(230, 140, 60)),
         (Kind::Finding, "suggestion") => ("Suggestion", Color::Yellow),
         (Kind::Finding, "question") => ("Question", Color::Magenta),
         (Kind::Finding, _) => ("Finding", Color::Red),

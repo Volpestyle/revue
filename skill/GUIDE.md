@@ -28,7 +28,7 @@ Look for problems this change introduces, in this order: does it do what the tic
 - Note what the change does well where it is worth knowing, and any choice it made that the ticket did not ask for.
 - Leave out taste, and anything that was already there before this change.
 
-Give each finding an id by severity: `B1` blocker, `F1` should fix, `S1` suggestion, `Q1` question. Good calls are `G1`, `G2`.
+Give each finding an id by severity: `B1`, `F1`, `S1`, `Q1`, with `severity` set to exactly `blocker`, `fix`, `suggestion` or `question`. Good calls are `G1`, `G2`.
 
 ## 3. Write the bundle
 
