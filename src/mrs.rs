@@ -74,7 +74,7 @@ pub fn drive_report(bundle: Option<&Path>) -> String {
     let app = |name: &str| ["/Applications", &home().join("Applications").to_string_lossy()].iter().any(|dir| Path::new(dir).join(name).exists());
     let tools = [
         (on_path("herdr-browser"), "herdr-browser", "Herdr Browser's in-app browser, when this session runs inside it ($HERDR_BROWSER is set)", "herdr-browser --skill"),
-        (app("Orca.app"), "Orca", "its built-in browser, when this session runs inside Orca and has its browser tool", "your tool list"),
+        (app("Orca.app"), "Orca", "its embedded browser, in a pane of the app with its own profile, when this session runs inside Orca", "orca skills get orca-cli (the CLI is Orca.app/Contents/Resources/bin/orca when it is not on PATH)"),
         (on_path("agent-browser"), "agent-browser", "headless browser", "agent-browser --help"),
         (on_path("playwright-cli"), "playwright-cli", "headless browser", "playwright-cli --help"),
         (on_path("playwright"), "playwright", "headless browser", "playwright --help"),

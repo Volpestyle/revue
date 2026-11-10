@@ -25,7 +25,7 @@ Take the first that `revui drive` found and that fits the target. Read the tool'
 | Target | Tool | Why it is safe |
 | --- | --- | --- |
 | Web page, inside Herdr Browser | `herdr-browser` (its in-app browser, the `agent` profile) | A pane in the app, not the person's browser |
-| Web page, inside Orca | Orca's built-in browser tool, if your tool list has one | Same |
+| Web page, inside Orca | `orca` (its embedded browser: `orca tab create`, `orca snapshot`, `orca click`), in a profile made for the run | Same |
 | Web page, anywhere | `agent-browser`, `playwright-cli` or Playwright, headless | No window |
 | Web page, nothing else | Chrome or Chromium with `--headless=new --user-data-dir=<temp dir>`, or `revui shot` for a page that needs no sign-in | No window, own profile |
 | Native desktop app | `agent-desktop`, without `--headed` | Its element actions do not move the pointer or take focus |

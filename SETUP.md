@@ -48,6 +48,10 @@ For an agent in a tab inside revui, leave the prompt out of the command: revui t
         "run": "claude --session-id \"$REVUI_SESSION_ID\"",
         "resume": "claude --resume \"$REVUI_SESSION_ID\"" }
 
+- Another coding agent in a tab (Cursor Agent shown). Any agent with a terminal interface works the same way: revui types the prompt into it.
+
+      { "name": "cursor", "modal": true, "run": "cursor-agent" }
+
 - A tmux split that is reused (`$TMUX` is set when they are in tmux). `send` gets whatever `run` printed in `$REVUI_SESSION`:
 
       { "name": "tmux split",
@@ -90,12 +94,15 @@ If their agent is started through a wrapper script, check how the wrapper passes
 
 - Run `revui skill install`. It installs three skills: `revui-guide`, which reviews a merge request or pull request and writes its guide; `revui`, for reading and updating bundles; and `revui-drive`, for running the product and driving its UI in the background.
 - If their team has its own review skill, it can write guides too by following `revui format`. Then set `generate` to call it.
+- An agent that is not Claude Code has no `/revui-guide` command, but every skill is one command away: `revui skill guide` prints the guide-writing skill, `revui skill` the bundle skill and `revui skill drive` the driving skill. Put that in the prompt:
+
+      "generate": "cursor-agent \"Run 'revui skill guide' and follow it for $REVUI_URL\"", "generate_modal": true
 
 If they want the run somewhere else, point `generate` at the same kind of pane command as in step 2, with `/revui-guide $REVUI_URL` as the prompt. A custom `generate` runs in the background; add `"generate_modal": true` to keep it in a revui tab.
 
 ## 5. How agents drive a browser or app
 
-`v` (verify) and `i` (artifact) can have an agent reproduce something in the running product. Ask how that should happen on this machine without taking over their screen, and write it as one or two plain sentences in `"drive"`. Agents read it with `revui drive`. Look at what they have: a terminal app with its own browser (Herdr Browser, Orca), Playwright or headless Chrome, `agent-desktop` for native apps, a project skill that runs the local stack.
+`v` (verify) and `i` (artifact) can have an agent reproduce something in the running product. Ask how that should happen on this machine without taking over their screen, and write it as one or two plain sentences in `"drive"`. Agents read it with `revui drive`. Run `revui drive` to see what this machine has: a terminal app with its own browser (Herdr Browser, Orca), Playwright or headless Chrome, `agent-desktop` for native apps. Check for a project skill that runs the local stack too. An in-app browser is the best answer when they have one: the agent works in a pane they can watch, with its own profile, and never touches their browser.
 
     { "drive": "Web pages: Playwright, headless. Local stack: the run-local skill. Never the system browser." }
 
