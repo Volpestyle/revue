@@ -1470,8 +1470,13 @@ pub fn review(terminal: &mut DefaultTerminal, bundle: Bundle, images: Picker, ta
                         if let Ok(mut bundle) = Bundle::load(&app.bundle.dir) {
                             bundle.successor = app.bundle.successor.clone();
                             let (job, tabs) = (app.job.take(), std::mem::take(&mut app.tabs));
+                            let (row, focus, in_tab) = (app.rows.get(app.sel).copied(), app.focus, app.in_tab);
                             app = App::new(bundle, images.clone());
-                            (app.job, app.tabs) = (job, tabs);
+                            (app.job, app.tabs, app.in_tab) = (job, tabs, in_tab);
+                            if let Some(same) = row.and_then(|row| app.rows.iter().position(|other| *other == row)) {
+                                app.select(same);
+                                app.focus = focus;
+                            }
                             app.note = "Guide loaded.".into();
                         }
                     }
