@@ -267,7 +267,7 @@ pub fn fetch(url: &str) -> Result<PathBuf, String> {
     mr.materialize()
 }
 
-const PR_FIELDS: &str = "number,title,url,headRefOid,headRefName,baseRefName,updatedAt,author,reviewRequests,state";
+const PR_FIELDS: &str = "number,title,url,headRefOid,headRefName,baseRefName,updatedAt,author,reviewRequests,state,latestReviews";
 
 fn from_github(pr: &serde_json::Value, repo: &str) -> Option<Mr> {
     let text = |key: &str| pr[key].as_str().unwrap_or("").to_string();
@@ -285,6 +285,7 @@ fn from_github(pr: &serde_json::Value, repo: &str) -> Option<Mr> {
         reviewers: pr["reviewRequests"].as_array().map(|all| all.iter().map(login).collect()).unwrap_or_default(),
         references: References { full: format!("{repo}#{number}") },
         state: if pr["state"] == "MERGED" { "merged".into() } else { "opened".into() },
+        approved_by: pr["latestReviews"].as_array().into_iter().flatten().filter(|review| review["state"] == "APPROVED").map(|review| login(&review["author"]).username).collect(),
         guide: false,
         older_guide: false,
     })
@@ -347,6 +348,8 @@ pub struct Mr {
     references: References,
     #[serde(default)]
     state: String,
+    #[serde(skip)]
+    approved_by: Vec<String>,
     #[serde(skip)]
     guide: bool,
     #[serde(skip)]
@@ -708,6 +711,13 @@ impl Mr {
     }
 }
 
+pub fn gitlab_approvals(reply: &str) -> std::collections::HashMap<u64, Vec<String>> {
+    let reply: serde_json::Value = serde_json::from_str(reply).unwrap_or_default();
+    let nodes = reply["data"]["project"]["mergeRequests"]["nodes"].as_array().cloned().unwrap_or_default();
+    let names = |mr: &serde_json::Value| mr["approvedBy"]["nodes"].as_array().into_iter().flatten().filter_map(|user| user["username"].as_str().map(String::from)).collect();
+    nodes.iter().filter_map(|mr| Some((mr["iid"].as_str()?.parse().ok()?, names(mr)))).collect()
+}
+
 fn fetch_all(merged: bool) -> (Vec<Mr>, String) {
     let config = config();
     let (mut all, mut message) = (Vec::new(), String::new());
@@ -738,6 +748,15 @@ fn fetch_all(merged: bool) -> (Vec<Mr>, String) {
     }
     all.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     all.dedup_by(|a, b| a.web_url == b.web_url);
+    let projects: std::collections::BTreeSet<String> = all.iter().filter(|mr| !mr.github() && mr.state != "merged").map(|mr| mr.repo().to_string()).collect();
+    for project in projects {
+        let iids: Vec<String> = all.iter().filter(|mr| mr.repo() == project).map(|mr| format!("\"{}\"", mr.iid)).collect();
+        let query = format!("query={{ project(fullPath: \"{project}\") {{ mergeRequests(iids: [{}], first: 100) {{ nodes {{ iid approvedBy {{ nodes {{ username }} }} }} }} }} }}", iids.join(","));
+        let approvals = glab(&["api", "graphql", "-f", &query]).map(|reply| gitlab_approvals(&reply)).unwrap_or_default();
+        for mr in all.iter_mut().filter(|mr| mr.repo() == project) {
+            mr.approved_by = approvals.get(&mr.iid).cloned().unwrap_or_default();
+        }
+    }
     for mr in &mut all {
         mr.guide = has_guide(&mr.dir());
         mr.older_guide = !mr.guide && mr.earlier_guide().is_some();
@@ -1019,6 +1038,10 @@ impl MrList {
             }
             row.extend(crate::rich(&mr.title, Style::new()));
             row.push(Span::styled(format!("  @{} · updated {}", mr.author.username, crate::ago(&mr.updated_at)), dim));
+            if !mr.approved_by.is_empty() {
+                let names: Vec<String> = mr.approved_by.iter().map(|name| format!("@{name}")).collect();
+                row.push(Span::styled(format!("  ✓ approved by {}", names.join(" ")), Style::new().fg(Color::Green)));
+            }
             Line::from(row)
         };
         let rows: Vec<Line> = entries

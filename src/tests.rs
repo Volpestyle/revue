@@ -410,3 +410,11 @@ fn control_keys_reach_a_tab_as_the_byte_a_terminal_sends() {
     assert_eq!((control('/'), control('7'), control('_')), (0x1f, 0x1f, 0x1f));
     assert_eq!((control(' '), control('['), control(']')), (0x00, 0x1b, 0x1d));
 }
+
+#[test]
+fn approvals_are_read_from_both_hosts() {
+    let reply = r#"{"data":{"project":{"mergeRequests":{"nodes":[{"iid":"7","approvedBy":{"nodes":[{"username":"alex"},{"username":"lee"}]}},{"iid":"8","approvedBy":{"nodes":[]}}]}}}}"#;
+    let found = crate::mrs::gitlab_approvals(reply);
+    assert_eq!((found[&7].clone(), found[&8].len()), (vec!["alex".to_string(), "lee".to_string()], 0));
+    assert!(crate::mrs::gitlab_approvals("not json").is_empty());
+}
