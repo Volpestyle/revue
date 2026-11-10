@@ -100,6 +100,7 @@ and `?` explains the screen you are on.
 | `c` `C` | comment on what is under the cursor, or on the whole merge request |
 | `t` `v` `i` | ask an agent, have it verify a finding, have it make an artifact |
 | `o` `O` | open the file or the artifact, or every file in this part |
+| `space` | in the artifact pane, play or pause a recording (needs `ffmpeg`) |
 | `d` `s` | hide the diff, put it beside the detail pane or under it |
 | `u` `U` | page down and up |
 | `p` | publish your review, after a preview |

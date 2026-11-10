@@ -29,7 +29,7 @@ impl App {
                 } else if grabbed.is_some() {
                     self.drag = grabbed;
                 } else if self.picture_area.contains(Position::new(m.column, m.row)) {
-                    self.pending = (had_focus == 3).then_some(KeyCode::Char('o'));
+                    self.pending = (had_focus == 3).then_some(KeyCode::Enter);
                     self.focus = 3;
                 } else if let Some(code) = self.detail_button(m.column, m.row) {
                     self.focus = 1;
@@ -169,6 +169,11 @@ impl App {
             }
             KeyCode::Char('z') => self.zoom = !self.zoom,
             KeyCode::Char(' ') if self.focus == 1 => self.toggle_evidence(false),
+            KeyCode::Char(' ') | KeyCode::Enter if self.focus == 3 && self.recording().is_some() => {
+                if let Some(video) = self.recording() {
+                    video.toggle();
+                }
+            }
             KeyCode::F(9) => self.toggle_evidence(true),
             KeyCode::Char('g') => self.ask_to_generate(),
             KeyCode::Char(c @ ('H' | 'L' | 'K' | 'J' | '<' | '>')) => self.panes.resize(c),

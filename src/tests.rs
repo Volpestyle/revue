@@ -391,3 +391,13 @@ fn a_guide_citing_code_outside_the_diff_is_rejected() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/bad-ref");
     assert!(Bundle::load(&dir).is_err_and(|e| e.contains("not in the diff")));
 }
+
+#[test]
+fn a_recording_picks_its_frame_from_the_play_clock() {
+    use crate::video::{clock, frame_at};
+    assert_eq!(frame_at(0.0, Some(80)), 0);
+    assert_eq!(frame_at(3.05, Some(80)), 30);
+    assert_eq!(frame_at(9.0, Some(80)), 79);
+    assert_eq!(frame_at(3.05, None), 30);
+    assert_eq!((clock(3.9), clock(68.0)), ("0:03".to_string(), "1:08".to_string()));
+}

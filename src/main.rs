@@ -4,6 +4,7 @@ mod input;
 mod mrs;
 mod tabs;
 mod term;
+mod video;
 #[cfg(test)]
 mod tests;
 
@@ -256,6 +257,7 @@ struct App {
     job: Option<std::process::Child>,
     picker: Picker,
     images: HashMap<PathBuf, Option<StatefulProtocol>>,
+    videos: HashMap<PathBuf, video::Video>,
 }
 
 impl App {
@@ -336,6 +338,7 @@ impl App {
             job: None,
             picker,
             images: HashMap::new(),
+            videos: HashMap::new(),
         };
         app.fetch_threads();
         app.rebuild_rows();
@@ -911,6 +914,11 @@ impl App {
         self.confirm.is_some() || self.menu.is_some() || self.palette.is_some() || self.input.is_some() || self.finish.is_some() || self.help
     }
 
+    fn recording(&mut self) -> Option<&mut video::Video> {
+        let path = self.evidence_path()?;
+        self.videos.get_mut(&path).filter(|video| video.error().is_none())
+    }
+
     fn artifact_at_cursor(&self) -> bool {
         self.focus != 2 && self.evidence_path().is_some()
     }
@@ -1453,7 +1461,7 @@ pub fn review(terminal: &mut DefaultTerminal, bundle: Bundle, images: Picker, ta
         let code = match app.pending.take() {
             Some(code) => code,
             None => {
-                if queued.is_none() && !event::poll(std::time::Duration::from_millis(if app.tabs.shown { 30 } else if app.incoming.is_some() || app.threads_rx.is_some() { 40 } else if app.note.starts_with("Copied ") { 150 } else if app.busy.is_some() { 100 } else { 500 }))? {
+                if queued.is_none() && !event::poll(std::time::Duration::from_millis(if app.tabs.shown { 30 } else if app.videos.values().any(video::Video::playing) { (1000.0 / video::FPS) as u64 / 2 } else if app.incoming.is_some() || app.threads_rx.is_some() { 40 } else if app.note.starts_with("Copied ") { 150 } else if app.busy.is_some() { 100 } else { 500 }))? {
                     redraw = !app.tabs.shown || app.tabs.terms.iter().fold(false, |changed, tab| tab.term.changed() | changed);
                     app.tick();
                     let newer = app.bundle.successor.clone().filter(|dir| mrs::has_guide(dir));

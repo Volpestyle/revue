@@ -1,6 +1,7 @@
 use crate::bundle::{Kind, Provenance, Status};
 use crate::input::{matching, Command, COMMANDS};
 use crate::{copied, mrs, share, App, Finish, Handle, Mark, Mode, Row, FINISH};
+use crate::video::{clock, Video};
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -124,7 +125,7 @@ fn without_tags(text: &str) -> String {
 fn artifact_kind(path: &str) -> (&'static str, &'static str) {
     match path.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => ("▣", "image"),
-        "mp4" | "mov" | "webm" | "mkv" => ("▶", "recording"),
+        "mp4" | "mov" | "webm" | "mkv" | "m4v" => ("▶", "recording"),
         _ => ("≡", "file"),
     }
 }
@@ -522,8 +523,25 @@ fn pane(title: &str, focused: bool) -> Block<'static> {
 fn draw_image(app: &mut App, frame: &mut Frame, area: Rect, path: PathBuf) {
     let shown = app.item().and_then(|item| item.evidence.iter().position(|e| e.path.as_ref().is_some_and(|p| path.ends_with(p))));
     let pictures = app.item().map_or(0, |item| item.evidence.iter().filter(|e| e.path.is_some()).count());
-    let keys = if app.focus == 3 && pictures > 0 { "j/k evidence · o opens · z zooms" } else { "o opens · z zooms" };
     let (_, kind) = artifact_kind(&path.to_string_lossy());
+    let mut keys = if app.focus == 3 && pictures > 0 { "j/k evidence · o opens · z zooms" } else { "o opens · z zooms" }.to_string();
+    let mut failed = None;
+    if kind == "recording" {
+        let covered = app.layered();
+        let video = app.videos.entry(path.clone()).or_insert_with(|| Video::start(&path));
+        if let Some((at, file)) = video.frame().filter(|_| !covered) {
+            if let Ok(decoded) = image::open(&file) {
+                video.shown = Some(at);
+                app.images.insert(path.clone(), Some(app.picker.new_resize_protocol(decoded)));
+            }
+        }
+        failed = video.error();
+        keys = match (video.playing(), video.length()) {
+            (true, Some(length)) => format!("{} / {} · space pause · o opens · z zooms", clock(video.position()), clock(length)),
+            _ if failed.is_some() => keys,
+            _ => format!("space plays · {keys}"),
+        };
+    }
     let title = format!("{kind} for evidence {} · {keys}", shown.map_or(0, |n| n + 1));
     app.picture_area = area;
     let picker = &app.picker;
@@ -557,7 +575,10 @@ fn draw_image(app: &mut App, frame: &mut Frame, area: Rect, path: PathBuf) {
             let text = small.then(|| std::fs::read_to_string(&path).ok()).flatten();
             let lines: Vec<Line> = match (kind, text) {
                 (_, Some(text)) => text.lines().take(inner.height as usize).map(|line| Line::raw(line.replace('\t', "    "))).collect(),
-                ("recording", _) => vec![Line::raw(format!("A recording: {name}")), Line::raw(""), Line::raw("Press o to play it.")],
+                ("recording", _) => match failed {
+                    Some(why) => vec![Line::raw(format!("A recording: {name}")), Line::raw(""), Line::raw("Press o to play it."), Line::raw(why)],
+                    None => vec![Line::raw(format!("A recording: {name}")), Line::raw(""), Line::raw("Loading its first frame.")],
+                },
                 _ => vec![Line::raw(format!("{name} cannot be shown here.")), Line::raw(""), Line::raw("Press o to open it.")],
             };
             frame.render_widget(Paragraph::new(lines), inner);
@@ -773,6 +794,7 @@ fn draw_review(app: &mut App, frame: &mut Frame) {
     let enter = match (app.focus, artifact, on_web) {
         (0, _, true) => format!("enter open on the web{open}"),
         (0, _, _) => format!("enter go in{open}"),
+        (3, true, _) if app.recording().is_some() => "space/enter play or pause · o open artifact".to_string(),
         (3, true, _) => "enter/o open artifact".to_string(),
         (1, _, _) if app.item().is_some_and(|item| !item.evidence.is_empty()) => format!("space/enter pick for v/i{open}"),
         _ => format!("enter/o open {target}{many}"),
@@ -802,6 +824,11 @@ fn draw_review(app: &mut App, frame: &mut Frame) {
         app.focus = 1;
     }
     let image = app.evidence_path();
+    for (path, video) in app.videos.iter_mut() {
+        if image.as_ref() != Some(path) {
+            video.pause();
+        }
+    }
     let pictured = image.is_some() && !app.zoom;
     app.side = if pictured { app.panes.side_with_artifact } else { app.panes.side };
     let wide = pictured && app.side && !diff_hidden;
