@@ -53,6 +53,15 @@ Two things it will not do:
 - **Post for you.** Only what you agreed with, pushed back on or wrote yourself
   goes out, and only when you publish.
 
+## With an agent
+
+revui starts your coding agent in a tab when a job needs one. These are real
+runs against a small demo project, sped up where the badge says so.
+
+**Generate a guide.** `g` on any merge request has the agent review it and write the guide.
+
+<p align="center"><img src="docs/generate.gif" alt="Generating a guide for a pull request" width="820"></p>
+
 ## A review, start to finish
 
 1. **Pick** a merge request from the list. Press `g` if it has no guide yet.
