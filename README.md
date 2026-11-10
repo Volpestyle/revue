@@ -62,6 +62,10 @@ runs against a small demo project, sped up where the badge says so.
 
 <p align="center"><img src="docs/generate.gif" alt="Generating a guide for a pull request" width="820"></p>
 
+**Ask about what you are looking at.** `t` opens the agent in a tab, already told which finding you are on. Tabs hold your agents, your editor and settings over the review.
+
+<p align="center"><img src="docs/ask.gif" alt="Asking the agent about a finding, then switching between the agent and editor tabs" width="820"></p>
+
 ## A review, start to finish
 
 1. **Pick** a merge request from the list. Press `g` if it has no guide yet.
