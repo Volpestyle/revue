@@ -128,7 +128,9 @@ and `?` explains the screen you are on.
 | **Coding agents** | Claude Code out of the box, or any agent you can start from a command |
 | **Editors** | Neovim, VS Code, or anything else that opens a file from a command |
 | **Terminals** | Any. Images show inline with Kitty, Sixel or iTerm2 graphics, and as block characters elsewhere |
-| **Multiplexers** | tmux, Herdr, or none: agents can open in a tab inside revui, or in a pane of yours |
+| **Where agents open** | A tab inside revui, with nothing to set up. Or a pane of yours: tmux, Herdr, Orca, zellij, anything that opens a pane from a command |
+
+Agents, editors and panes are not built-in integrations: each is one command in the config. `revui setup` has your agent look at your machine, ask where things should open, and write those commands for you.
 
 ## Configuration
 

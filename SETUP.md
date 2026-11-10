@@ -4,6 +4,19 @@ You are an agent setting up `revui`, a terminal viewer for guided code reviews, 
 
 Run `revui doctor` first. It prints the config file's path and what is missing. If the config file already exists, read it and change only what is needed: never drop a key the person set.
 
+## What to ask
+
+Look first, then ask. Find out what you can from the machine, and put the questions to the person in one message, each with what you found as the suggested answer:
+
+1. Which projects do you review, and on which host? (step 1)
+2. Which coding agent do you use, and how do you start it? (step 2)
+3. Should agents open in a tab inside revui, or in a pane of the terminal app you are in? (step 2)
+4. Which editor should files open in? (step 3)
+5. Does your team have its own review skill, or should the bundled one write guides? (step 4)
+6. How may an agent run the product and drive a browser without taking over your screen? (step 5)
+
+Do not ask what the machine already answers, and do not write a key for anything they left at the default.
+
 ## 1. Which merge requests to list
 
 Ask which projects they review, and on which host. To suggest some, look at what they are already involved in:
@@ -18,6 +31,12 @@ Write them into `repos`: a GitLab project as its full path, a GitHub repo as `gi
 ## 2. Where an agent opens
 
 `t` (ask) and `v` (verify) start a coding agent from the `agents` list. The first entry is the default. With no `agents` key, revui runs Claude Code in a tab inside itself, which works everywhere, so only write this key when the person wants something else. Ask which coding agent they use and where they like it to open.
+
+See where revui is running before you ask, so you can offer what applies:
+
+    echo "term=$TERM_PROGRAM tmux=$TMUX zellij=$ZELLIJ herdr=$HERDR_SOCKET_PATH"; ls /Applications 2>/dev/null | grep -i -E 'orca|herdr|ghostty|wezterm|kitty|iterm'
+
+There are two choices. A tab inside revui needs nothing from the terminal and works in all of them. A pane of their own needs an app that can be told from a command to open a pane and to type into it, which a multiplexer or an agent workspace can and a plain terminal window usually cannot.
 
 If they start Claude Code through their own command (a wrapper or another account), set `"claude": "<that command>"`. The defaults run it, and any command can use it as `$REVUI_CLAUDE`. It must be a program on PATH, not a shell alias.
 
@@ -35,7 +54,17 @@ For an agent in a tab inside revui, leave the prompt out of the command: revui t
         "run": "tmux split-window -h -P -F '#{pane_id}' -e \"REVUI_PROMPT=$REVUI_PROMPT\" 'claude \"$REVUI_PROMPT\"'",
         "send": "tmux send-keys -t \"$REVUI_SESSION\" \"$REVUI_PROMPT\" Enter" }
 
-- Another multiplexer or terminal app: find its command for "open a pane running this program" and "type this text into that pane", and write `run` and `send` the same way. Without `modal`, `run` must return at once. Test the command by hand with a harmless prompt before writing it.
+- Another multiplexer or terminal app: find its command for "open a pane running this program" and "type this text into that pane", and write `run` and `send` the same way. Read the app's own help first, never guess a flag. Where to look:
+
+  | App | Open a pane | Type into it |
+  | --- | --- | --- |
+  | Herdr | `herdr pane split`, then `herdr pane run` | `herdr pane send-text` |
+  | Orca | `orca terminal split` or `terminal create` (`orca agent-context` prints every command; the CLI is inside `Orca.app/Contents/Resources/bin`) | `orca terminal send` |
+  | zellij | `zellij run` | `zellij action write-chars` |
+  | kitty | `kitty @ launch` (needs remote control allowed) | `kitty @ send-text` |
+  | WezTerm | `wezterm cli split-pane` | `wezterm cli send-text` |
+
+  Without `modal`, `run` must return at once and print what `send` needs to find the pane again. Test both commands by hand with a harmless prompt before writing them.
 
 If their agent is started through a wrapper script, check how the wrapper passes arguments: a flag that takes an optional value can swallow the prompt, and `--` before the prompt prevents that.
 
