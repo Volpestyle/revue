@@ -58,6 +58,10 @@ Two things it will not do:
 revui starts your coding agent in a tab when a job needs one. These are real
 runs against a small demo project, sped up where the badge says so.
 
+**Set up on first run.** revui offers to set itself up: your agent looks at your terminal and editor and writes one config file.
+
+<p align="center"><img src="docs/setup.gif" alt="First run: an agent sets revui up" width="820"></p>
+
 **Generate a guide.** `g` on any merge request has the agent review it and write the guide.
 
 <p align="center"><img src="docs/generate.gif" alt="Generating a guide for a pull request" width="820"></p>
@@ -65,6 +69,14 @@ runs against a small demo project, sped up where the badge says so.
 **Ask about what you are looking at.** `t` opens the agent in a tab, already told which finding you are on. Tabs hold your agents, your editor and settings over the review.
 
 <p align="center"><img src="docs/ask.gif" alt="Asking the agent about a finding, then switching between the agent and editor tabs" width="820"></p>
+
+**Have a finding reproduced.** `v` asks the agent to run it locally, off your screen. Here it starts the project's own server, drops the first response, and confirms that one checkout creates two orders.
+
+<p align="center"><img src="docs/verify.gif" alt="The agent reproducing a finding locally and marking it confirmed" width="820"></p>
+
+**Ask for an artifact.** `i` has the agent capture one for a finding: output of a run, a screenshot, a diagram or a recording. It shows beside the code.
+
+<p align="center"><img src="docs/artifact.gif" alt="The agent attaching the output of a real run to a finding" width="820"></p>
 
 ## A review, start to finish
 
