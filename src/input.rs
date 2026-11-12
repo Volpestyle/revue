@@ -35,12 +35,13 @@ impl App {
                     self.focus = 1;
                     self.pending = Some(code);
                 } else if let Some(row) = self.detail_part(m.column, m.row) {
-                    self.focus = 0;
+                    self.focus = if self.outline { 0 } else { 1 };
                     self.select(row);
                 } else if let Some(note) = self.detail_note(m.column, m.row) {
                     self.focus = 1;
                     let (text, saved) = (self.state.notes[note].text.clone(), self.state.notes[note].clone());
-                    self.input = Some(Input { title: "Edit your comment".into(), cursor: text.chars().count(), text, note: saved, edit: Some(note) });
+                    let quote = self.quote_of(&saved);
+                    self.input = Some(Input { title: "Edit your comment".into(), cursor: text.chars().count(), text, note: saved, edit: Some(note), quote });
                 } else if let Some(pane) = over {
                     self.focus = pane;
                     self.selection = Some((pane, inside(pane), inside(pane)));
@@ -154,12 +155,18 @@ impl App {
         match code {
             KeyCode::Char('q') | KeyCode::Esc => return false,
             KeyCode::Tab | KeyCode::BackTab => {
-                let mut stops = vec![0, 1];
+                let mut stops = if self.outline { vec![0, 1] } else { vec![1] };
                 stops.extend(self.evidence_path().is_some().then_some(3));
                 stops.extend(self.diff_shown().then_some(2));
                 let here = stops.iter().position(|&pane| pane == self.focus).unwrap_or(0);
                 let step = if code == KeyCode::Tab { 1 } else { stops.len() - 1 };
                 self.focus = stops[(here + step) % stops.len()];
+            }
+            KeyCode::Char('l') | KeyCode::Right => self.card(1),
+            KeyCode::Char('h') | KeyCode::Left => self.card(-1),
+            KeyCode::Char('b') => {
+                self.outline = !self.outline;
+                self.focus = if self.outline { 0 } else { 1 };
             }
             KeyCode::Char('j') | KeyCode::Down => self.step(1),
             KeyCode::Char('k') | KeyCode::Up => self.step(-1),
@@ -231,25 +238,31 @@ impl App {
                         (_, _, 'a') => format!("{id}: you agree. It goes out when you publish the review (p)."),
                         _ => format!("{id}: dismissed. It will not be raised."),
                     };
-                    let wants_reason = !cleared && matches!((kind, c), (Kind::Finding, 'a') | (Kind::Decision, 'x'));
+                    let wants_reason = !cleared && matches!((kind, c), (Kind::Finding, _) | (Kind::Decision, 'x'));
+                    // The comment that came with the mark: on the item itself, not on a line of it.
+                    let own = |note: &Note| !note.posted && note.item.as_ref() == Some(&id) && note.file.is_none() && note.reply_to.is_none();
                     if !wants_reason {
                         let before = self.state.notes.len();
-                        self.state.notes.retain(|note| note.posted || note.item.as_ref() != Some(&id) || note.file.is_some() || note.reply_to.is_some());
+                        self.state.notes.retain(|note| !own(note));
                         if self.state.notes.len() != before {
                             self.rebuild_rows();
                         }
                     }
-                    if wants_reason {
-                        let title = match kind {
-                            Kind::Decision => format!("Why you push back on {id} (optional)"),
-                            _ => format!("Comment on {id} (optional)"),
-                        };
-                        let note = Note { item: Some(id.clone()), ..Note::default() };
-                        self.input = Some(Input { title, text: String::new(), cursor: 0, note, edit: None });
-                    }
                     match cleared {
                         true => drop(self.state.verdicts.remove(&id)),
-                        false => drop(self.state.verdicts.insert(id, verdict.into())),
+                        false => drop(self.state.verdicts.insert(id.clone(), verdict.into())),
+                    }
+                    self.state.quotes.remove(&id);
+                    if wants_reason {
+                        let title = match (kind, c) {
+                            (Kind::Decision, _) => format!("Why you push back on {id} (optional)"),
+                            (_, 'x') => format!("Why you dismiss {id} (optional)"),
+                            _ => format!("Comment on {id} (optional)"),
+                        };
+                        let edit = self.state.notes.iter().position(own);
+                        let note = edit.map_or_else(|| Note { item: Some(id.clone()), ..Note::default() }, |i| self.state.notes[i].clone());
+                        let (text, quote) = (note.text.clone(), self.quote_of(&note));
+                        self.input = Some(Input { title, cursor: text.chars().count(), text, note, edit, quote });
                     }
                 }
                 None => self.note = "Select a finding first: a and x say whether you agree with that finding. Approving the merge request is under p.".into(),
@@ -371,9 +384,12 @@ pub fn matching(all: &[Command], filter: &str) -> Vec<Command> {
     all.iter().copied().filter(|(label, _, _)| wanted(label)).collect()
 }
 
-pub(crate) const COMMANDS: [Command; 30] = [
+pub(crate) const COMMANDS: [Command; 33] = [
+    ("Next card: the summary, each part, each finding, then the conversation", "l or →", KeyCode::Char('l')),
+    ("Previous card", "h or ←", KeyCode::Char('h')),
+    ("Contents: show or hide the list of every card", "b", KeyCode::Char('b')),
     ("Go one step in: a pane, then the artifact or file; a thread opens on the web", "enter", KeyCode::Enter),
-    ("Ask the companion agent about this", "t", KeyCode::Char('t')),
+    ("Ask the agent about this", "t", KeyCode::Char('t')),
     ("Ask: choose where the agent opens", "T", KeyCode::Char('T')),
     ("Verify this with an agent", "v", KeyCode::Char('v')),
     ("Verify: choose where the agent opens", "V", KeyCode::Char('V')),
@@ -388,7 +404,7 @@ pub(crate) const COMMANDS: [Command; 30] = [
     ("Open the merge request in the browser", "m", KeyCode::Char('m')),
     ("Make an artifact for this finding (diagram, screenshot, recording)", "i", KeyCode::Char('i')),
     ("Artifact: choose where the agent opens", "I", KeyCode::Char('I')),
-    ("Generate a guide for this merge request", "g", KeyCode::Char('g')),
+    ("Have the agent review this merge request and write its guide", "g", KeyCode::Char('g')),
     ("Agree with this finding (it goes out when you publish)", "a", KeyCode::Char('a')),
     ("Dismiss this finding (it is not raised)", "x", KeyCode::Char('x')),
     ("Evidence: next", "e", KeyCode::Char('e')),
@@ -397,9 +413,9 @@ pub(crate) const COMMANDS: [Command; 30] = [
     ("Evidence: show or hide how it was checked", "ctrl-o", KeyCode::F(9)),
     ("Open the file in your editor (in the artifact pane: the artifact)", "o", KeyCode::Char('o')),
     ("Open every file in this part of the diff", "O", KeyCode::Char('O')),
-    ("Show the agent and editor tabs (keep ctrl held, q again: next tab)", "ctrl-q", KeyCode::F(12)),
+    ("Show the agent (keep ctrl held, q again: next tab)", "ctrl-q", KeyCode::F(12)),
     ("Switch pane", "tab", KeyCode::Tab),
     ("Resize panes", "H L J K < >", KeyCode::Null),
     ("Settings: edit the config file", ",", KeyCode::Char(',')),
-    ("Back to the merge request list", "q", KeyCode::Char('q')),
+    ("Back to your reviews", "q", KeyCode::Char('q')),
 ];

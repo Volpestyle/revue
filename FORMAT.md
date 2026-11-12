@@ -17,6 +17,7 @@ generator then fills in `review.json` and leaves `title` and `sources` as they a
     {
       "title": "Retry order submission",
       "summary": "What the change does and how it was reviewed.",
+      "working": "Reviewing part 2 of 4: Retry the submit call",
       "sources": [ ...written by revui fetch, keep as is... ],
       "sections": [
         {
@@ -56,8 +57,27 @@ a link as a bare URL. Keep `summary` to two short paragraphs at most. In an item
 `body`, a line that starts with `# ` is shown as a sub-heading: use it to label the
 parts of a longer finding, each on its own line.
 
+`working` is there only while the guide is being written: one line saying what is
+being reviewed right now. The viewer shows it next to a spinner and tells the reader
+more findings may come. Remove it when the guide is whole.
+
 Required: `title`, `sources`, `sections` (each with `title`, `why`, `hunks`), and
 for each item `id`, `kind`, `title`, `body`. Everything else can be left out.
+
+## Writing in stages
+
+The person starts reading as soon as there is something to read, so a guide is
+written in stages, and `review.json` is a complete, loadable file after each one:
+
+1. The summary and every section, with `working` set, and `"items": []`.
+2. One item at a time, section by section in reading order, each written to the file
+   as soon as it is found. Update `working` when you move to the next section.
+3. The finished summary, and `working` removed.
+
+Write the whole file to `review.json.tmp` and rename it over `review.json`, so the
+viewer never reads half a file. Never reorder or renumber sections once the first
+stage is written, and never change the `id` of an item that is already in the file:
+the person may already be on it.
 
 ## Sections
 
@@ -78,7 +98,9 @@ for each item `id`, `kind`, `title`, `body`. Everything else can be left out.
   requirements were silent, for the reviewer to accept or reject) or `good` (a right
   call that is not obvious from the diff). Judgments go in items, not in a section's `why`.
 - `id` is unique in the bundle. The reviewer's verdicts are stored against it.
-- Items show under their section in the order they are written: most severe first.
+- Items show under their section in the order they are written. The reader steps
+  through them one at a time, so within a section put the most severe first when
+  you know them all, and append when you find one later.
 - `section` is the index of the section that owns the line to fix. Leave it out for
   an item that spans the whole change.
 - `at.line` is a line number in the new version of the file. The viewer scrolls the
@@ -123,8 +145,9 @@ bundle and, if an earlier head had a guide, writes its directory into a file nam
 
 ## Check
 
-`revui check <dir>` prints `ok` and exits 0 for a clean bundle. It prints `not ok`
-and exits 1 when a hunk is in no section, an evidence file is missing, or an item's
-`at` is outside its section's hunks. It fails with an error when the bundle does not
+`revui check <dir>` prints a line that starts with `ok` and exits 0 for a clean bundle. It prints `not ok`
+and exits 1 when a hunk is in no section, an evidence file is missing, an item's
+`at` is outside its section's hunks, or `working` is still set. Between stages,
+"still being written" should be the only problem it reports. It fails with an error when the bundle does not
 load. Run it after writing `review.json`.
 An open viewer reloads by itself when `review.json` changes.

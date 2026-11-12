@@ -6,7 +6,7 @@ description: >-
 
 # revui bundles
 
-A bundle is one directory holding a guided review of a merge request. A person reads it in the `revui` viewer while you work, and the viewer reloads whenever `review.json` changes.
+A bundle is one directory holding a guided review of a merge request. A person reads it in the `revui` viewer while you work, one finding at a time, and the viewer reloads whenever `review.json` changes. Write the whole file to `review.json.tmp` and rename it over `review.json`, so the viewer never reads half a file.
 
 ## Find and read
 
@@ -41,7 +41,7 @@ Never write `observed` for something that was not run.
 
 Keep the check from spilling over:
 
-- Reproduce it locally: the project's local stack or a scratch worktree, at the merge request's head. Use a shared environment (dev, UAT) only when the claim is about that environment or the person said to.
+- Reproduce it where the person wants runs to happen for this repo: `revui drive <bundle dir>` prints it under "Where evidence comes from", and the `revui-drive` skill says what to do when it has not been asked yet. A check that needs only the code (a test, a script) runs in a scratch worktree at the merge request's head. A deployed environment only has merged code: read today's behaviour from it, never what this change does, and never write to it.
 - Stay off the person's screen. Never take their pointer, keyboard or focus, and never drive the window they are working in.
 - To run the product or drive its browser or desktop UI, follow the `revui-drive` skill (`revui skill drive` prints it). It starts with `revui drive <bundle dir>`, which lists the person's preference, the driving tools on this machine and the notes earlier runs left for this repo.
 - Verifying is the whole job. If the check breaks something or turns up an unrelated bug, stop, say what happened and what state things are in, and leave the fix to the person.
@@ -58,7 +58,7 @@ Pick the cheapest form that shows the impact:
 - A flow, a sequence or a state change: write Mermaid to `assets/<name>.mmd` and run `revui diagram assets/<name>.mmd assets/<name>.png`. A diagram you reasoned out is `inferred`. Keep the numbered steps as `text` on the same entry.
 - A bug that is a path through states (a lifecycle, a protocol, a job queue): a statechart, when this session has a skill or tool that model-checks one. Render it to an image. What a model checker verified is `checked`.
 - A page that loads without signing in: `revui shot <url or html file> assets/<name>.png [WIDTHxHEIGHT]`. It runs headless. A screenshot of a real page is `observed`: say in the caption exactly what was loaded.
-- Behaviour before and after the change: run the project's local stack if it has one, at the base and at the head, and capture a screenshot of each or a recording. This is `observed`, with the steps as `repro`. Use the project's own skills and tools for running and driving the app.
+- Behaviour before and after the change: the baseline and the change, each from where `revui drive` says this repo's evidence comes from, with a screenshot of each or a recording. This is `observed`, with the steps as `repro`. Use the project's own skills and tools for running and driving the app.
 - Output worth keeping (a log, a trace, a test run): save the file under `assets/`.
 
 Attach the file as an evidence `path` on the item, with a caption that says what it shows. Images show inline in the viewer; other files open with `o`. One artifact per item unless asked for more. If none of these is possible here, say what blocked you: do not fake one, and do not label something `observed` that was not captured from a real run.

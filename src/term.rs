@@ -118,6 +118,11 @@ impl Term {
         let _ = self.writer.write_all(pasted.as_bytes()).and_then(|_| self.writer.flush());
     }
 
+    /// Presses return, to send what `type_text` put in the program's input.
+    pub fn submit(&mut self) {
+        let _ = self.writer.write_all(b"\r").and_then(|_| self.writer.flush());
+    }
+
     pub fn quiet_for(&self) -> std::time::Duration {
         self.last_output.lock().unwrap().elapsed()
     }

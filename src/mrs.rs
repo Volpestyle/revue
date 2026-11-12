@@ -13,15 +13,9 @@ use std::{fs, io};
 
 #[derive(Deserialize, Default)]
 struct Config {
-    #[serde(default)]
-    repos: Vec<String>,
-    #[serde(default)]
-    groups: Vec<String>,
-    host: Option<String>,
     generate: Option<String>,
     generate_modal: Option<bool>,
     claude: Option<String>,
-    linear_key: Option<String>,
     drive: Option<String>,
     accent: Option<String>,
     open: Option<String>,
@@ -94,6 +88,9 @@ pub fn drive_report(bundle: Option<&Path>) -> String {
     if let Some(repo) = repo.filter(|repo| !repo.is_empty()) {
         let notes = data_dir().join("notes").join(format!("{}.md", repo.replace('/', "__")));
         let text = fs::read_to_string(&notes).unwrap_or_default();
+        if !text.contains("## Evidence") {
+            out += &format!("\nWhere evidence comes from for {repo}: not asked yet. Before the first run that needs a running product, ask the person where the change runs and where the baseline is read from, then record it under `## Evidence` in the notes file (`revui skill drive`, step 2).\n");
+        }
         out += &format!("\nNotes for {repo} ({}):\n{}\n", notes.display(), if text.trim().is_empty() { "none yet: append what you learn" } else { text.trim() });
     }
     out
@@ -103,64 +100,22 @@ fn config() -> Config {
     fs::read_to_string(config_path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
 }
 
+/// The generator the config names, and whether it runs in a tab. Without one, the review's own agent writes the guide.
 pub fn generate_settings() -> (String, bool) {
     let config = config();
     match config.generate {
         Some(command) => (command, config.generate_modal.unwrap_or(false)),
-        None => ("$REVUI_CLAUDE -- \"/revui-guide $REVUI_URL\"".into(), true),
+        None => (format!("{}   # this review's agent reads $REVUI_URL and writes the guide", agents().remove(0).run), true),
     }
+}
+
+/// Whether the config names its own generator. Without one, the review's agent writes the guide.
+pub fn generate_configured() -> bool {
+    config().generate.is_some()
 }
 
 pub fn generate_command() -> String {
     generate_settings().0
-}
-
-type Projects = std::collections::HashMap<String, (String, String)>;
-
-fn linear_key() -> Option<String> {
-    std::env::var("LINEAR_API_KEY").ok().or(config().linear_key).filter(|key| !key.trim().is_empty())
-}
-
-fn parse_projects(text: &str) -> Result<Projects, String> {
-    let reply: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("unreadable reply: {e}"))?;
-    if let Some(message) = reply["errors"][0]["message"].as_str() {
-        return Err(message.to_string());
-    }
-    let nodes = reply["data"]["issues"]["nodes"].as_array().ok_or("no issues in the reply")?;
-    let text = |value: &serde_json::Value| value.as_str().unwrap_or("").to_string();
-    Ok(nodes.iter().map(|node| (text(&node["identifier"]), (text(&node["project"]["name"]), text(&node["title"])))).collect())
-}
-
-// ponytail: one request of 250 issues, page it when a list holds more tickets than that
-fn linear_projects(key: &str, issues: &[String]) -> Result<Projects, String> {
-    use std::io::Write;
-    if key.contains(['"', '\\', '\n']) {
-        return Err("the key has a quote, backslash or line break in it".into());
-    }
-    let mut teams: std::collections::BTreeMap<&str, Vec<u64>> = Default::default();
-    for (team, number) in issues.iter().filter_map(|issue| issue.split_once('-')) {
-        teams.entry(team).or_default().extend(number.parse::<u64>());
-    }
-    let filters: Vec<_> = teams.iter().map(|(team, numbers)| serde_json::json!({"team": {"key": {"eq": team}}, "number": {"in": numbers}})).collect();
-    let body = serde_json::json!({
-        "query": "query($f: IssueFilter) { issues(filter: $f, first: 250) { nodes { identifier title project { name } } } }",
-        "variables": {"f": {"or": filters}},
-    });
-    let mut curl = Command::new("curl");
-    curl.args(["-sS", "--max-time", "20", "-K", "-", "https://api.linear.app/graphql"]);
-    curl.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
-    let mut child = curl.spawn().map_err(|e| format!("curl: {e}"))?;
-    let options = format!(
-        "header = \"Authorization: {}\"\nheader = \"Content-Type: application/json\"\ndata = {}\n",
-        key.trim(),
-        serde_json::Value::String(body.to_string())
-    );
-    child.stdin.take().ok_or("curl: no stdin")?.write_all(options.as_bytes()).map_err(|e| format!("curl: {e}"))?;
-    let out = child.wait_with_output().map_err(|e| format!("curl: {e}"))?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
-    }
-    parse_projects(&String::from_utf8_lossy(&out.stdout))
 }
 
 pub fn apply_accent() {
@@ -196,9 +151,6 @@ pub fn doctor(images: &str) -> (bool, String) {
     let skills = set.map_or_else(|| home().join(".claude"), PathBuf::from).join("skills");
     let writes_guides = |dir: PathBuf| fs::read_to_string(dir.join("SKILL.md")).is_ok_and(|text| text.contains("revui hunks"));
     let writers: Vec<String> = fs::read_dir(&skills).into_iter().flatten().flatten().filter(|entry| writes_guides(entry.path())).map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| !["revui", "revui-drive"].contains(&name.as_str())).collect();
-    let host = config.host.clone().unwrap_or_default();
-    let github = config.repos.iter().filter(|repo| github_repo(repo, &host).is_some()).count();
-    let gitlab = config.repos.len() - github + config.groups.len();
     let (has_glab, has_gh) = (on_path("glab"), on_path("gh"));
     let (generate, open) = (generate_command().replace("$REVUI_CLAUDE", &claude()), open_command());
     let mut agent = agents().remove(0);
@@ -206,30 +158,25 @@ pub fn doctor(images: &str) -> (bool, String) {
     let settings = config_path().display().to_string();
     let default = |set: bool| if set { "" } else { " (the default)" };
     let mut checks = vec![(has_glab || has_gh, "a code host CLI is installed".to_string(), "install glab (GitLab) or gh (GitHub)".to_string())];
-    if gitlab > 0 {
-        checks.push((has_glab, "glab is installed".into(), "install the GitLab CLI: https://gitlab.com/gitlab-org/cli".into()));
-        checks.push((glab(&["auth", "status"]).is_ok(), "glab is signed in".into(), "run: glab auth login".into()));
+    if has_glab {
+        checks.push((glab(&["auth", "status"]).is_ok(), "glab is signed in, for GitLab merge requests".into(), "run: glab auth login".into()));
     }
-    if github > 0 {
-        checks.push((has_gh, "gh is installed".into(), "install the GitHub CLI: https://cli.github.com".into()));
-        checks.push((gh(&["auth", "status"]).is_ok(), "gh is signed in".into(), "run: gh auth login".into()));
+    if has_gh {
+        checks.push((gh(&["auth", "status"]).is_ok(), "gh is signed in, for GitHub pull requests".into(), "run: gh auth login".into()));
     }
-    checks.extend([
-        (
-            !config.repos.is_empty() || !config.groups.is_empty(),
-            format!("{} repos and {} groups to list merge requests from", config.repos.len(), config.groups.len()),
-            format!("no repos yet: add \"repos\" to {settings}, or press e in revui"),
-        ),
-        (
+    if config.generate.is_some() {
+        checks.push((
             !writers.is_empty(),
             format!("a skill that writes guides is installed: {}", writers.join(", ")),
             format!("no skill that writes guides in {}: run `revui skill install`", skills.display()),
-        ),
-        (
+        ));
+        checks.push((
             on_path(&first(&generate)),
-            format!("g runs{}{}: {generate}", default(config.generate.is_some()), if generate_settings().1 { " in a tab here" } else { "" }),
-            format!("g would run `{generate}`, but {} is not on PATH: set \"generate\" in {settings}", first(&generate)),
-        ),
+            format!("g runs{}: {generate}", if generate_settings().1 { " in a tab here" } else { "" }),
+            format!("g would run `{generate}`, but {} is not on PATH: fix \"generate\" in {settings}", first(&generate)),
+        ));
+    }
+    checks.extend([
         (
             on_path(&first(&open)),
             format!("enter runs{}: {open}", default(config.open.is_some())),
@@ -237,8 +184,8 @@ pub fn doctor(images: &str) -> (bool, String) {
         ),
         (
             on_path(&first(&agent.run)),
-            format!("c and v start the {} agent{}: {}", agent.name, default(config.agents.is_some()), agent.run),
-            format!("c and v would run `{}`, but {} is not on PATH: set \"agents\" in {settings}", agent.run, first(&agent.run)),
+            format!("pasting a link starts this agent, and t and v ask it{}: {}", default(config.agents.is_some()), agent.run),
+            format!("the agent would run `{}`, but {} is not on PATH: set \"agents\" in {settings}", agent.run, first(&agent.run)),
         ),
     ]);
     let mut out = String::new();
@@ -251,27 +198,30 @@ pub fn doctor(images: &str) -> (bool, String) {
     (checks.iter().all(|c| c.0), out)
 }
 
-pub fn fetch(url: &str) -> Result<PathBuf, String> {
+/// The merge request or pull request a link names, as its host has it now.
+fn lookup(url: &str) -> Result<Mr, String> {
     let wrong = "expected a GitLab merge request URL or a GitHub pull request URL";
     let number = |rest: &str| rest.chars().take_while(char::is_ascii_digit).collect::<String>();
     if let Some((project, rest)) = url.split_once("/pull/") {
         let repo = project.splitn(4, '/').nth(3).ok_or(wrong)?;
         let found = gh(&["pr", "view", &number(rest), "-R", repo, "--json", PR_FIELDS])?;
         let pr: serde_json::Value = serde_json::from_str(&found).map_err(|e| format!("gh pr view: {e}"))?;
-        return from_github(&pr, repo).ok_or("gh pr view: an unexpected reply")?.materialize();
+        return from_github(&pr, repo).ok_or("gh pr view: an unexpected reply".to_string());
     }
     let (project, rest) = url.split_once("/-/merge_requests/").ok_or(wrong)?;
     let repo = project.splitn(4, '/').nth(3).ok_or(wrong)?;
-    let mr: Mr = serde_json::from_str(&glab(&["mr", "view", &number(rest), "-R", repo, "-F", "json"])?)
-        .map_err(|e| format!("glab mr view: {e}"))?;
-    mr.materialize()
+    serde_json::from_str(&glab(&["mr", "view", &number(rest), "-R", repo, "-F", "json"])?).map_err(|e| format!("glab mr view: {e}"))
 }
 
-const PR_FIELDS: &str = "number,title,url,headRefOid,headRefName,baseRefName,updatedAt,author,reviewRequests,state,latestReviews";
+pub fn fetch(url: &str) -> Result<PathBuf, String> {
+    lookup(url)?.materialize()
+}
+
+const PR_FIELDS: &str = "number,title,url,headRefOid,headRefName,baseRefName,author";
 
 fn from_github(pr: &serde_json::Value, repo: &str) -> Option<Mr> {
     let text = |key: &str| pr[key].as_str().unwrap_or("").to_string();
-    let login = |user: &serde_json::Value| User { username: user["login"].as_str().or(user["name"].as_str()).unwrap_or("").to_string() };
+    let author = &pr["author"];
     let number = pr["number"].as_u64()?;
     Some(Mr {
         iid: number,
@@ -280,31 +230,9 @@ fn from_github(pr: &serde_json::Value, repo: &str) -> Option<Mr> {
         sha: pr["headRefOid"].as_str().map(String::from),
         source_branch: text("headRefName"),
         target_branch: text("baseRefName"),
-        updated_at: text("updatedAt"),
-        author: login(&pr["author"]),
-        reviewers: pr["reviewRequests"].as_array().map(|all| all.iter().map(login).collect()).unwrap_or_default(),
+        author: User { username: author["login"].as_str().or(author["name"].as_str()).unwrap_or("").to_string() },
         references: References { full: format!("{repo}#{number}") },
-        state: if pr["state"] == "MERGED" { "merged".into() } else { "opened".into() },
-        approved_by: pr["latestReviews"].as_array().into_iter().flatten().filter(|review| review["state"] == "APPROVED").map(|review| login(&review["author"]).username).collect(),
-        guide: false,
-        older_guide: false,
     })
-}
-
-/// A config entry names a GitHub repo when it says so (`github.com/owner/repo`,
-/// with or without `https://`), or when `"host": "github"` makes that the default.
-fn github_repo(entry: &str, default_host: &str) -> Option<String> {
-    let bare = entry.trim().trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/');
-    match bare.strip_prefix("github.com/") {
-        Some(repo) => Some(repo.to_string()),
-        None if default_host == "github" && !bare.starts_with("gitlab.") => Some(bare.to_string()),
-        None => None,
-    }
-}
-
-fn gitlab_repo(entry: &str) -> String {
-    let bare = entry.trim().trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/');
-    bare.strip_prefix("gitlab.com/").unwrap_or(bare).to_string()
 }
 
 pub fn file_url(url: &str, sha: &str, file: &str, line: u32) -> Option<String> {
@@ -341,19 +269,8 @@ pub struct Mr {
     sha: Option<String>,
     source_branch: String,
     target_branch: String,
-    updated_at: String,
     author: User,
-    #[serde(default)]
-    reviewers: Vec<User>,
     references: References,
-    #[serde(default)]
-    state: String,
-    #[serde(skip)]
-    approved_by: Vec<String>,
-    #[serde(skip)]
-    guide: bool,
-    #[serde(skip)]
-    older_guide: bool,
 }
 
 pub fn home() -> PathBuf {
@@ -618,26 +535,6 @@ impl Mr {
         guided.max_by_key(|dir| fs::metadata(dir.join("review.json")).and_then(|m| m.modified()).ok())
     }
 
-    fn issue(&self) -> String {
-        if let Some((start, end)) = crate::ticket(&self.title) {
-            return self.title[start..end].to_string();
-        }
-        let branch = self.source_branch.rsplit('/').next().unwrap_or("").to_uppercase();
-        match crate::ticket(&branch) {
-            Some((0, end)) => branch[..end].to_string(),
-            _ => "No ticket".to_string(),
-        }
-    }
-
-    fn issue_title(&self) -> String {
-        let title = self.title.strip_prefix("Draft: ").unwrap_or(&self.title);
-        match crate::ticket(title) {
-            Some((_, end)) => title[end..].trim_start_matches([')', ':', ' ', '-', ',']).to_string(),
-            None if self.issue() == "No ticket" => "merge requests with no ticket in the title or branch".to_string(),
-            None => title.to_string(),
-        }
-    }
-
     fn repo(&self) -> &str {
         self.references.full.rsplit_once(['!', '#']).map_or("", |(repo, _)| repo)
     }
@@ -657,21 +554,6 @@ impl Mr {
     fn dir(&self) -> PathBuf {
         let sha = &self.sha()[..self.sha().len().min(8)];
         data_dir().join(format!("{}-{}-{sha}", self.repo().replace('/', "__"), self.iid))
-    }
-
-    fn matches(&self, filter: &str) -> bool {
-        let reviewers: Vec<_> = self.reviewers.iter().map(|r| r.username.as_str()).collect();
-        let haystack = format!(
-            "{} {} {} {} {} {}",
-            self.repo(),
-            self.reference(),
-            self.title,
-            self.author.username,
-            self.source_branch,
-            reviewers.join(" ")
-        )
-        .to_lowercase();
-        filter.to_lowercase().split_whitespace().all(|term| haystack.contains(term))
     }
 
     pub fn write_bundle(&self, dir: &Path, patch: &str) -> io::Result<()> {
@@ -711,241 +593,151 @@ impl Mr {
     }
 }
 
-pub fn gitlab_approvals(reply: &str) -> std::collections::HashMap<u64, Vec<String>> {
-    let reply: serde_json::Value = serde_json::from_str(reply).unwrap_or_default();
-    let nodes = reply["data"]["project"]["mergeRequests"]["nodes"].as_array().cloned().unwrap_or_default();
-    let names = |mr: &serde_json::Value| mr["approvedBy"]["nodes"].as_array().into_iter().flatten().filter_map(|user| user["username"].as_str().map(String::from)).collect();
-    nodes.iter().filter_map(|mr| Some((mr["iid"].as_str()?.parse().ok()?, names(mr)))).collect()
-}
-
-fn fetch_all(merged: bool) -> (Vec<Mr>, String) {
-    let config = config();
-    let (mut all, mut message) = (Vec::new(), String::new());
-    if config.repos.is_empty() && config.groups.is_empty() {
-        message = format!("No repos configured. Press e to edit {}", config_path().display());
-    }
-    let host = config.host.clone().unwrap_or_default();
-    let repos = config.repos.iter().map(|r| ("-R", r));
-    for (flag, name) in repos.chain(config.groups.iter().map(|g| ("-g", g))) {
-        let listed = match github_repo(name, &host).filter(|_| flag == "-R") {
-            Some(repo) => {
-                let state = if merged { "merged" } else { "open" };
-                let found = gh(&["pr", "list", "-R", &repo, "--state", state, "-L", "100", "--search", "sort:updated-desc", "--json", PR_FIELDS]);
-                let prs = found.and_then(|out| serde_json::from_str::<Vec<serde_json::Value>>(&out).map_err(|e| e.to_string()));
-                prs.map(|prs| prs.iter().filter_map(|pr| from_github(pr, &repo)).collect())
-            }
-            None => {
-                let project = gitlab_repo(name);
-                let mut args = vec!["mr", "list", flag, project.as_str(), "-F", "json", "-P", "100", "-o", "updated_at", "-S", "desc"];
-                args.extend(merged.then_some("--merged"));
-                glab(&args).and_then(|out| serde_json::from_str::<Vec<Mr>>(&out).map_err(|e| e.to_string()))
-            }
-        };
-        match listed {
-            Ok(mrs) => all.extend(mrs),
-            Err(e) => message = format!("{name}: {e}"),
-        }
-    }
-    all.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    all.dedup_by(|a, b| a.web_url == b.web_url);
-    let projects: std::collections::BTreeSet<String> = all.iter().filter(|mr| !mr.github() && mr.state != "merged").map(|mr| mr.repo().to_string()).collect();
-    for project in projects {
-        let iids: Vec<String> = all.iter().filter(|mr| mr.repo() == project).map(|mr| format!("\"{}\"", mr.iid)).collect();
-        let query = format!("query={{ project(fullPath: \"{project}\") {{ mergeRequests(iids: [{}], first: 100) {{ nodes {{ iid approvedBy {{ nodes {{ username }} }} }} }} }} }}", iids.join(","));
-        let approvals = glab(&["api", "graphql", "-f", &query]).map(|reply| gitlab_approvals(&reply)).unwrap_or_default();
-        for mr in all.iter_mut().filter(|mr| mr.repo() == project) {
-            mr.approved_by = approvals.get(&mr.iid).cloned().unwrap_or_default();
-        }
-    }
-    for mr in &mut all {
-        mr.guide = has_guide(&mr.dir());
-        mr.older_guide = !mr.guide && mr.earlier_guide().is_some();
-    }
-    (all, message)
-}
-
+/// One merge request opened here before, read from its bundle on disk.
 #[derive(Clone)]
-enum Entry {
-    Project(String),
-    Issue(String),
-    Mr(usize),
+struct Past {
+    dir: PathBuf,
+    url: String,
+    repo: String,
+    reference: String,
+    title: String,
+    author: String,
+    guide: bool,
+    items: usize,
+    working: String,
+    marked: usize,
+    drafts: usize,
+    done: Option<String>,
+    touched: std::time::SystemTime,
+}
+
+impl Past {
+    fn name(&self) -> String {
+        format!("{}{}", self.repo.rsplit('/').next().unwrap_or(""), self.reference)
+    }
+
+    fn matches(&self, filter: &str) -> bool {
+        let haystack = format!("{} {} {} {}", self.repo, self.reference, self.title, self.author).to_lowercase();
+        filter.to_lowercase().split_whitespace().all(|term| haystack.contains(term))
+    }
+}
+
+fn past(dir: &Path) -> Option<Past> {
+    let read = |name: &str| fs::read_to_string(dir.join(name)).ok().and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+    let review = read("review.json")?;
+    let state = read("state.json").unwrap_or_default();
+    let source = &review["sources"][0];
+    let text = |value: &serde_json::Value| value.as_str().unwrap_or("").trim().to_string();
+    let count = |value: &serde_json::Value| value.as_array().map_or(0, Vec::len);
+    let touched = ["review.json", "state.json", "session.json"].iter().filter_map(|name| fs::metadata(dir.join(name)).and_then(|m| m.modified()).ok()).max()?;
+    Some(Past {
+        dir: dir.into(),
+        url: text(&source["url"]),
+        repo: text(&source["repo"]),
+        reference: text(&source["reference"]),
+        title: text(&review["title"]),
+        author: text(&source["author"]),
+        guide: count(&review["sections"]) > 0,
+        items: count(&review["items"]),
+        working: text(&review["working"]),
+        marked: state["verdicts"].as_object().map_or(0, |verdicts| verdicts.len()),
+        drafts: state["notes"].as_array().into_iter().flatten().filter(|note| note["posted"] != true).count(),
+        done: state["finished"]["how"].as_str().map(String::from),
+        touched,
+    })
+}
+
+/// Every merge request opened here, the latest first. One with several heads shows once: its newest guide, or its newest diff.
+fn history(root: &Path) -> Vec<Past> {
+    let mut all: Vec<Past> = fs::read_dir(root).into_iter().flatten().flatten().filter_map(|entry| past(&entry.path())).collect();
+    all.sort_by(|a, b| (b.guide, b.touched).cmp(&(a.guide, a.touched)));
+    let mut kept: Vec<Past> = Vec::new();
+    for found in all {
+        match kept.iter_mut().find(|other| !found.url.is_empty() && other.url == found.url) {
+            Some(other) => other.touched = other.touched.max(found.touched),
+            None => kept.push(found),
+        }
+    }
+    kept.sort_by(|a, b| b.touched.cmp(&a.touched));
+    kept
+}
+
+fn since(then: std::time::SystemTime) -> String {
+    match then.elapsed().map_or(0, |passed| passed.as_secs()) {
+        seconds if seconds < 90 => "just now".to_string(),
+        seconds if seconds < 3_600 => format!("{}m ago", seconds / 60),
+        seconds if seconds < 86_400 => format!("{}h ago", seconds / 3_600),
+        seconds => format!("{}d ago", seconds / 86_400),
+    }
+}
+
+/// The merge request or pull request link in a paste, if it holds one.
+pub fn link(text: &str) -> Option<String> {
+    let around = ['<', '>', '"', '\'', '(', ')', '[', ']', ',', '.'];
+    let words = text.split_whitespace().map(|word| word.trim_matches(around));
+    words.filter(|word| word.starts_with("http")).find(|word| word.contains("/pull/") || word.contains("/-/merge_requests/")).map(String::from)
+}
+
+/// The bundle to read for a link: the guide for its current head, or an earlier head's guide with the current one waiting behind it.
+pub fn open_url(url: &str) -> Result<Bundle, String> {
+    let mr = lookup(url)?;
+    let current = mr.materialize()?;
+    let guided = (!has_guide(&current)).then(|| mr.earlier_guide()).flatten();
+    let mut bundle = Bundle::load(guided.as_ref().unwrap_or(&current))?;
+    bundle.successor = guided.is_some().then_some(current);
+    Ok(bundle)
 }
 
 #[derive(Default)]
-struct MrList {
+struct Home {
     tabs: crate::Tabs,
     configuring: bool,
+    past: Vec<Past>,
+    scanned: Option<std::time::Instant>,
+    field: String,
+    cursor: usize,
+    typing: bool,
+    sel: usize,
+    message: String,
     busy: Option<String>,
+    help: bool,
     palette: Option<(String, usize)>,
     palette_cursor: usize,
-    welcome: bool,
-    view: usize,
-    expanded: std::collections::HashSet<String>,
-    folded: std::collections::HashSet<String>,
-    linear: Option<String>,
-    projects: Projects,
-    asked: std::collections::HashSet<String>,
-    lookup: Option<std::sync::mpsc::Receiver<Result<Projects, String>>>,
-    loading: [bool; 2],
-    cache: [Option<Vec<Mr>>; 2],
-    fetches: Vec<std::sync::mpsc::Receiver<(bool, Vec<Mr>, String)>>,
-    state_tabs: [Rect; 3],
-    help: bool,
     selecting: Option<(Position, Position)>,
     copy: bool,
     clipboard: Option<String>,
-    search_area: Rect,
-    confirm: Option<Mr>,
-    generating: Vec<(String, PathBuf)>,
     buttons: Vec<(Rect, KeyCode)>,
     actions: Vec<(Rect, KeyCode)>,
-    mrs: Vec<Mr>,
-    filter: String,
-    cursor: usize,
-    filtering: bool,
-    sel: usize,
-    message: String,
-    state: ListState,
+    field_area: Rect,
     body: Rect,
+    state: ListState,
 }
 
-impl MrList {
-    fn visible(&self) -> Vec<&Mr> {
-        let filter = self.filter.to_lowercase();
-        let linear = |m: &Mr| self.projects.get(&m.issue()).is_some_and(|(project, title)| format!("{project} {title}").to_lowercase().contains(&filter));
-        self.mrs.iter().filter(|m| m.matches(&self.filter) || m.issue().to_lowercase().contains(&filter) || (self.view == 2 && linear(m))).collect()
+impl Home {
+    fn scan(&mut self) {
+        self.past = history(&data_dir());
+        self.scanned = Some(std::time::Instant::now());
     }
 
-    fn entries(&self) -> Vec<Entry> {
-        let shown = self.visible();
-        if self.view != 2 {
-            return (0..shown.len()).map(Entry::Mr).collect();
-        }
-        let mut keys: Vec<String> = Vec::new();
-        for mr in shown.iter().filter(|mr| mr.state != "merged") {
-            let key = mr.issue();
-            if !keys.contains(&key) {
-                keys.push(key);
-            }
-        }
-        keys.sort_by_key(|key| key == "No ticket");
-        let mut projects: Vec<String> = Vec::new();
-        for key in &keys {
-            let project = self.project(key);
-            if !projects.contains(&project) {
-                projects.push(project);
-            }
-        }
-        projects.sort_by_key(|project| project == "No project");
-        let mut entries = Vec::new();
-        for project in projects {
-            if !self.projects.is_empty() {
-                entries.push(Entry::Project(project.clone()));
-            }
-            for key in keys.iter().filter(|key| !self.folded.contains(&project) && self.project(key) == project) {
-                entries.push(Entry::Issue(key.clone()));
-                if self.expanded.contains(key) {
-                    entries.extend(shown.iter().enumerate().filter(|(_, mr)| mr.issue() == *key).map(|(i, _)| Entry::Mr(i)));
-                }
-            }
-        }
-        entries
+    /// What the field holds narrows the list, unless it is a link: that starts a review.
+    fn visible(&self) -> Vec<&Past> {
+        let filter = if link(&self.field).is_some() { "" } else { self.field.as_str() };
+        self.past.iter().filter(|past| past.matches(filter)).collect()
     }
 
-    fn project(&self, issue: &str) -> String {
-        self.projects.get(issue).map(|(project, _)| project.clone()).filter(|project| !project.is_empty()).unwrap_or_else(|| "No project".into())
+    fn picked(&self) -> Option<Past> {
+        self.visible().get(self.sel).map(|past| (*past).clone())
     }
 
-    fn toggle(&mut self) -> bool {
-        let (set, key) = match self.entries().get(self.sel).cloned() {
-            Some(Entry::Project(name)) => (&mut self.folded, name),
-            Some(Entry::Issue(key)) => (&mut self.expanded, key),
-            _ => return false,
-        };
-        if !set.remove(&key) {
-            set.insert(key);
-        }
-        true
-    }
-
-    fn picked(&self) -> Option<Mr> {
-        match self.entries().get(self.sel)? {
-            Entry::Mr(i) => self.visible().get(*i).map(|mr| (*mr).clone()),
-            _ => None,
-        }
-    }
-
-    fn states(&self) -> &'static [bool] {
-        [&[false][..], &[true][..], &[false, true][..]][self.view.min(2)]
-    }
-
-    fn rebuild(&mut self) {
-        let mut pool: Vec<Mr> = self.states().iter().flat_map(|&merged| self.cache[merged as usize].clone().unwrap_or_default()).collect();
-        pool.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-        pool.dedup_by(|a, b| a.web_url == b.web_url);
-        self.mrs = pool;
-    }
-
-    fn load(&mut self) {
-        apply_accent();
-        self.linear = linear_key();
-        for &merged in self.states() {
-            if std::mem::replace(&mut self.loading[merged as usize], true) {
-                continue;
-            }
-            let (sender, receiver) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let (mrs, message) = fetch_all(merged);
-                let _ = sender.send((merged, mrs, message));
-            });
-            self.fetches.push(receiver);
-        }
-    }
-
-    fn show(&mut self, view: usize) {
-        (self.view, self.sel) = (view, 0);
-        self.message.clear();
-        self.rebuild();
-        self.load();
-    }
-
-    fn absorb(&mut self) {
-        let mut done = Vec::new();
-        self.fetches.retain(|receiver| match receiver.try_recv() {
-            Ok(result) => {
-                done.push(result);
-                false
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => true,
-            Err(_) => false,
-        });
-        for (merged, mrs, message) in done {
-            self.loading[merged as usize] = false;
-            self.cache[merged as usize] = Some(mrs);
-            if self.states().contains(&merged) {
-                self.message = message;
-                self.rebuild();
-            }
-        }
-        match self.lookup.as_ref().map(|lookup| lookup.try_recv()) {
-            Some(Ok(Ok(projects))) => self.projects.extend(projects),
-            Some(Ok(Err(problem))) => self.message = format!("Linear projects: {problem}"),
-            Some(Err(std::sync::mpsc::TryRecvError::Empty)) => return,
-            _ => {}
-        }
-        self.lookup = None;
-        let new: Vec<String> = self.mrs.iter().map(Mr::issue).filter(|issue| issue != "No ticket" && !self.asked.contains(issue)).collect();
-        if let (2, Some(key), false) = (self.view, self.linear.clone(), new.is_empty()) {
-            self.asked.extend(new.iter().cloned());
-            let (sender, receiver) = std::sync::mpsc::channel();
-            std::thread::spawn(move || sender.send(linear_projects(&key, &new)));
-            self.lookup = Some(receiver);
-        }
+    /// An agent started here is still on it: its tab is named for the merge request.
+    fn live(&self, past: &Past) -> bool {
+        let name = format!(" {}", past.name());
+        self.tabs.terms.iter().any(|tab| tab.name.ends_with(&name))
     }
 
     fn draw(&mut self, frame: &mut Frame) {
         crate::clear_popup();
-        self.draw_list(frame);
+        self.draw_home(frame);
         if let Some(text) = crate::popup_selection(frame, self.selecting) {
             if self.copy {
                 self.copy = false;
@@ -955,142 +747,110 @@ impl MrList {
         }
     }
 
-    fn draw_list(&mut self, frame: &mut Frame) {
-        let tabs = if self.tabs.is_empty() { "" } else { " · ctrl-q tabs" };
-        let around = format!("q/esc quit · / commands · ? help · , settings{tabs}");
-        let keys = "j/k move · f search · o open MRs · m merged MRs · i by issue · enter open or expand · g guide · r refresh";
-        let picked = self.picked();
-        let wanted: Vec<(&str, &str, KeyCode, Color)> = match &picked {
-            Some(mr) if mr.guide => vec![("enter", "Open guide", KeyCode::Enter, Color::Green)],
-            Some(_) => vec![("enter", "Open diff", KeyCode::Enter, Color::Green), ("g", "Generate guide", KeyCode::Char('g'), crate::accent())],
-            None => Vec::new(),
-        };
-        let [head, body, foot] = Layout::vertical([Constraint::Length(3), Constraint::Min(0), Constraint::Length(2)]).areas(frame.area());
-        self.actions = crate::footer(frame, foot, &wanted, keys, &around);
-        self.search_area = Rect { y: head.y + 1, height: 1, ..head };
-        self.state_tabs = [Rect::new(head.x + 1, head.y, 6, 1), Rect::new(head.x + 8, head.y, 8, 1), Rect::new(head.x + 17, head.y, 8, 1)];
-        let total = self.mrs.len();
-        let sel = self.sel.min(self.entries().len().saturating_sub(1));
-        (self.sel, self.body) = (sel, body);
-        self.state.select(Some(sel));
-        let entries = self.entries();
-        let shown = self.visible();
-        let nothing_matches = shown.is_empty();
+    fn draw_home(&mut self, frame: &mut Frame) {
         let dim = Style::new().fg(Color::DarkGray);
+        let bold = Style::new().add_modifier(Modifier::BOLD);
+        let [head, field, body, foot] = Layout::vertical([Constraint::Length(1), Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)]).areas(frame.area());
+        let shown: Vec<Past> = self.visible().into_iter().cloned().collect();
+        let sel = self.sel.min(shown.len().saturating_sub(1));
+        (self.sel, self.body) = (sel, body);
+        self.field_area = Rect { y: field.y + 1, height: 1.min(field.height), ..field };
 
-        let waiting = self.states().iter().any(|&merged| self.loading[merged as usize]);
-        let loading = waiting.then(|| format!("Loading {}", ["open merge requests", "merged merge requests", "issues"][self.view.min(2)]));
-        let status = match self.busy.clone().or(loading) {
-            Some(busy) => vec![Span::raw(" "), crate::spinner(), Span::raw(format!(" {busy}…"))],
-            None if self.message.is_empty() => Vec::new(),
-            None => vec![Span::styled(format!(" {}", self.message), Style::new().fg(Color::Yellow))],
+        let tabs = if self.tabs.is_empty() { "" } else { " · ctrl-q agents" };
+        let keys = match (self.typing, self.past.is_empty()) {
+            (true, true) => format!("enter start the review · , settings · esc quit{tabs}"),
+            (true, false) => format!("enter start or open · ↓ your reviews · esc clear{tabs}"),
+            _ => format!("j/k move · tab type a link or filter · r rescan · , settings{tabs} · / commands · ? help · q quit"),
         };
-        let field = match (self.filtering, self.filter.is_empty()) {
-            (true, true) => Span::raw(" "),
-            (_, false) => Span::raw(format!(" {} ", self.filter)),
-            (false, true) => Span::styled("· f", dim),
+        let wanted: Vec<(&str, &str, KeyCode, Color)> = match (self.typing, shown.get(sel)) {
+            (false, Some(_)) => vec![("enter", "Open", KeyCode::Enter, Color::Green)],
+            _ => Vec::new(),
         };
-        let search = Line::from(vec![Span::styled(" Search ", Style::new().fg(crate::accent()).add_modifier(Modifier::BOLD)), field]);
+        self.actions = crate::footer(frame, foot, &wanted, &keys, "");
 
-        let mut title = vec![
-            Span::raw(" "),
-            Span::styled(" Open ", if self.view == 0 { Style::new().fg(Color::Black).bg(crate::accent()).add_modifier(Modifier::BOLD) } else { dim }),
-            Span::raw(" "),
-            Span::styled(" Merged ", if self.view == 1 { Style::new().fg(Color::Black).bg(Color::Magenta).add_modifier(Modifier::BOLD) } else { dim }),
-            Span::raw(" "),
-            Span::styled(" Issues ", if self.view == 2 { Style::new().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD) } else { dim }),
-            Span::styled(if shown.len() == total { format!("  {total} merge requests") } else { format!("  {} of {total} merge requests", shown.len()) }, dim),
-        ];
-        if self.view == 2 && self.linear.is_none() {
-            title.push(Span::styled("  · add a Linear key in settings to group by project too", dim));
+        let total = self.past.len();
+        let mut title = vec![Span::styled(" revui", bold.fg(crate::accent()))];
+        title.push(Span::styled(
+            match (total, shown.len() == total) {
+                (0, _) => String::new(),
+                (1, true) => "  1 review".to_string(),
+                (_, true) => format!("  {total} reviews"),
+                _ => format!("  {} of {total} reviews", shown.len()),
+            },
+            dim,
+        ));
+        match (&self.busy, self.message.is_empty()) {
+            (Some(busy), _) => title.extend([Span::raw("  "), crate::spinner(), Span::raw(format!(" {busy}…"))]),
+            (None, false) => title.push(Span::styled(format!("  {}", self.message), Style::new().fg(Color::Yellow))),
+            _ => {}
         }
-        let empty_status = match total {
-            0 => Line::from(status),
-            _ => {
-                title.push(Span::raw("  "));
-                title.extend(status);
-                Line::raw("")
-            }
-        };
-        frame.render_widget(ratatui::text::Text::from(vec![Line::from(title), search]), head);
-        let modal = self.help || self.welcome || self.confirm.is_some() || self.palette.is_some();
-        if self.filtering && !modal {
-            let column = self.cursor.min(self.filter.chars().count()) as u16;
-            frame.set_cursor_position(Position::new(head.x + 9 + column, head.y + 1));
+        frame.render_widget(Line::from(title), head);
+
+        let ask = if total == 0 { "Paste a merge request or pull request link to start a review" } else { "Paste a merge request or pull request link to start a review, or type to filter" };
+        let mark = Span::styled(" ▌ ", Style::new().fg(if self.typing { crate::accent() } else { Color::DarkGray }));
+        let text = if self.field.is_empty() { Span::styled(ask, dim) } else { Span::raw(self.field.clone()) };
+        frame.render_widget(Line::from(vec![mark, text]), self.field_area);
+        let modal = self.help || self.palette.is_some();
+        if self.typing && !modal && self.busy.is_none() {
+            let column = self.cursor.min(self.field.chars().count()) as u16;
+            frame.set_cursor_position(Position::new(self.field_area.x + 3 + column, self.field_area.y));
         }
 
-        let mr_row = |mr: &Mr, nested: bool| {
-            let tag = match (mr.guide, mr.older_guide) {
-                _ if self.generating.iter().any(|(url, _)| *url == mr.web_url) => {
-                    let mut spinner = crate::spinner();
-                    spinner.content = format!(" {} ...  ", spinner.content).into();
-                    spinner
-                }
-                (true, _) => Span::styled(" guide ", Style::new().fg(Color::Green)),
-                (_, true) => Span::styled(" older ", Style::new().fg(Color::Yellow)),
-                _ => Span::styled(" diff  ", dim),
-            };
-            let repo = mr.repo().rsplit('/').next().unwrap_or("");
-            let mut row = vec![Span::raw(if !nested { "" } else if self.projects.is_empty() { "     " } else { "       " }), tag];
-            row.push(Span::styled(format!("{repo:<18.18} {:<7}", mr.reference()), Style::new().fg(crate::accent())));
-            if nested && mr.state == "merged" {
-                row.push(Span::styled("merged ", Style::new().fg(Color::Magenta)));
-            }
-            row.extend(crate::rich(&mr.title, Style::new()));
-            row.push(Span::styled(format!("  @{} · updated {}", mr.author.username, crate::ago(&mr.updated_at)), dim));
-            if !mr.approved_by.is_empty() {
-                let names: Vec<String> = mr.approved_by.iter().map(|name| format!("@{name}")).collect();
-                row.push(Span::styled(format!("  ✓ approved by {}", names.join(" ")), Style::new().fg(Color::Green)));
-            }
-            Line::from(row)
-        };
-        let rows: Vec<Line> = entries
+        let rows: Vec<Line> = shown
             .iter()
-            .map(|entry| match entry {
-                Entry::Mr(i) => mr_row(shown[*i], self.view == 2),
-                Entry::Project(name) => {
-                    let mine: Vec<&&Mr> = shown.iter().filter(|mr| self.project(&mr.issue()) == *name).collect();
-                    let mut issues: Vec<String> = mine.iter().map(|mr| mr.issue()).collect();
-                    issues.sort();
-                    issues.dedup();
-                    let open = mine.iter().filter(|mr| mr.state != "merged").count();
-                    let arrow = if self.folded.contains(name) { "▸" } else { "▾" };
-                    Line::from(vec![
-                        Span::styled(format!(" {arrow} {name}"), Style::new().fg(crate::accent()).add_modifier(Modifier::BOLD)),
-                        Span::styled(format!("  {} issue{} · {open} open · {} merged", issues.len(), if issues.len() == 1 { "" } else { "s" }, mine.len() - open), dim),
-                    ])
+            .map(|past| {
+                let live = self.live(past);
+                let tag = match (live, !past.working.is_empty(), &past.done, past.guide) {
+                    (true, _, _, _) => {
+                        let mut spinner = crate::spinner();
+                        spinner.content = format!(" {} reviewing ", spinner.content).into();
+                        spinner
+                    }
+                    (_, true, _, _) => Span::styled(" unfinished  ", Style::new().fg(Color::Yellow)),
+                    (_, _, Some(_), _) => Span::styled(" ✓ done      ", Style::new().fg(Color::Green)),
+                    (_, _, _, true) => Span::styled(" guide       ", Style::new().fg(Color::Green)),
+                    _ => Span::styled(" diff        ", dim),
+                };
+                let found = match past.items {
+                    1 => "1 finding".to_string(),
+                    n => format!("{n} findings"),
+                };
+                let mut facts = Vec::new();
+                match (live, past.guide) {
+                    (true, false) => facts.push("the agent is reading the change".to_string()),
+                    (true, true) if past.items == 0 => facts.push("no findings yet".to_string()),
+                    (true, true) => facts.push(format!("{found} so far")),
+                    (false, true) => facts.push(found),
+                    _ => {}
                 }
-                Entry::Issue(key) => {
-                    let mine: Vec<&&Mr> = shown.iter().filter(|mr| mr.issue() == *key).collect();
-                    let open = mine.iter().filter(|mr| mr.state != "merged").count();
-                    let guides = mine.iter().filter(|mr| mr.guide || mr.older_guide).count();
-                    let arrow = if self.expanded.contains(key) { "▾" } else { "▸" };
-                    let linear = self.projects.get(key).map(|(_, title)| title.clone()).filter(|title| !title.is_empty());
-                    let name = linear.unwrap_or_else(|| mine.first().map_or(String::new(), |mr| mr.issue_title()));
-                    let indent = if self.projects.is_empty() { "" } else { "  " };
-                    let mut counts = vec![format!("{} open", open), format!("{} merged", mine.len() - open)];
-                    counts.retain(|part| !part.starts_with("0 "));
-                    counts.extend((guides > 0).then(|| format!("{guides} with a guide")));
-                    let updated = mine.first().map_or(String::new(), |mr| crate::ago(&mr.updated_at));
-                    Line::from(vec![
-                        Span::styled(format!("{indent} {arrow} "), Style::new().fg(Color::Yellow)),
-                        Span::styled(format!("{key:<10}"), Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
-                        Span::styled(name, Style::new().add_modifier(Modifier::BOLD)),
-                        Span::styled(format!("  {} · updated {updated}", counts.join(" · ")), dim),
-                    ])
-                }
+                facts.extend((past.guide && past.items > 0 && past.marked > 0).then(|| format!("{} of {} marked", past.marked, past.items)));
+                facts.extend((past.drafts > 0).then(|| format!("{} unpublished", past.drafts)));
+                facts.extend(past.done.as_ref().map(|how| format!("review {how}")));
+                facts.extend([past.author.clone(), since(past.touched)]);
+                facts.retain(|fact| !fact.is_empty());
+                let mut row = vec![tag, Span::styled(format!("{:<24.24} ", past.name()), Style::new().fg(crate::accent()))];
+                row.extend(crate::rich(&past.title, Style::new()));
+                row.push(Span::styled(format!("  {}", facts.join(" · ")), dim));
+                Line::from(row)
             })
             .collect();
-        let list = List::new(rows).highlight_style(Style::new().add_modifier(Modifier::REVERSED));
-        let mut state = self.state.clone();
-        frame.render_stateful_widget(list, body, &mut state);
-        let bar = Rect { y: body.y.saturating_sub(1), height: body.height + 2, ..body };
-        crate::scrollbar(frame, bar, entries.len(), state.offset(), true);
-        let first_row = Rect { height: 1.min(body.height), ..body };
-        if self.mrs.is_empty() {
-            frame.render_widget(empty_status, first_row);
-        } else if nothing_matches {
-            frame.render_widget(Line::styled(format!(" No results for \"{}\"", self.filter), Style::new().fg(Color::DarkGray)), first_row);
+        let count = rows.len();
+        let band = if self.typing { Style::new().bg(Color::Rgb(48, 54, 68)) } else { Style::new().add_modifier(Modifier::REVERSED) };
+        self.state.select(Some(sel));
+        frame.render_stateful_widget(List::new(rows).highlight_style(band), body, &mut self.state);
+        crate::scrollbar(frame, Rect { y: body.y.saturating_sub(1), height: body.height + 2, ..body }, count, self.state.offset(), !self.typing);
+        if total == 0 {
+            let lines = vec![
+                Line::raw(""),
+                Line::styled("   Nothing reviewed here yet.", bold),
+                Line::raw(""),
+                Line::styled("   Copy the link of a merge request or pull request and paste it.", dim),
+                Line::styled("   An agent reviews it and writes the summary first, then one finding at a time.", dim),
+                Line::styled("   You read each one, ask the agent about it or have it checked, and publish what you agree with.", dim),
+            ];
+            frame.render_widget(ratatui::text::Text::from(lines), body);
+        } else if count == 0 {
+            frame.render_widget(Line::styled(format!("   No review matches \"{}\"", self.field.trim()), dim), Rect { height: 1.min(body.height), ..body });
         }
 
         if let Some((filter, selected)) = &self.palette {
@@ -1098,40 +858,6 @@ impl MrList {
         }
         if self.help {
             self.buttons = crate::draw_help(frame);
-        }
-        if let Some(mr) = &self.confirm {
-            let heading = Style::new().fg(crate::accent()).add_modifier(Modifier::BOLD);
-            let repo = mr.repo().rsplit('/').next().unwrap_or("");
-            let mut lines = vec![Line::styled(format!("{repo} {}", mr.reference()), heading), Line::raw(mr.title.clone()), Line::raw("")];
-            let note = match (mr.guide, mr.older_guide) {
-                (true, _) => "⚠ This replaces the guide it already has.",
-                (_, true) => "⚠ Its guide is for an earlier head. This updates it for the new commits.",
-                _ => "",
-            };
-            if !note.is_empty() {
-                lines.extend([Line::styled(note, Style::new().fg(Color::Yellow)), Line::raw("")]);
-            }
-            lines.extend([Line::styled("Starts an agent run: a few minutes, and it spends tokens.", dim), Line::raw("")]);
-            let width = frame.area().width.saturating_sub(4).min(84).saturating_sub(8).max(10) as usize;
-            for (i, part) in crate::wrap(&generate_command().replace("$REVUI_URL", &mr.web_url).replace("$REVUI_CLAUDE", &claude()), width).into_iter().enumerate() {
-                let prompt = Span::styled(if i == 0 { "$ " } else { "  " }, dim);
-                lines.push(Line::from(vec![prompt, Span::styled(part, Style::new().fg(Color::Green))]));
-            }
-            let buttons = [("y", "Start", KeyCode::Char('y')), ("n", "Cancel", KeyCode::Char('n'))];
-            self.buttons = crate::popup(frame, " Generate a guide ", lines, &buttons).1;
-        }
-        if self.welcome {
-            let lines = vec![
-                Line::styled("Welcome to revui", Style::new().fg(crate::accent()).add_modifier(Modifier::BOLD)),
-                Line::raw(""),
-                Line::raw("It is not set up yet: it needs to know which repos you review,"),
-                Line::raw("and where you like agents and files to open."),
-                Line::raw(""),
-                Line::styled("An agent can do this for you. It looks at your terminal and editor,", dim),
-                Line::styled("asks which repos you review, and writes the config.", dim),
-            ];
-            let buttons = [("a", "Set up with an agent", KeyCode::Char('a')), ("e", "Edit the config myself", KeyCode::Char('e')), ("esc", "Later", KeyCode::Esc)];
-            self.buttons = crate::popup(frame, " Setup ", lines, &buttons).1;
         }
     }
 }
@@ -1154,111 +880,118 @@ pub fn config_editor() -> Command {
     let path = config_path();
     if !path.exists() {
         let _ = fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
-        let _ = fs::write(&path, "{\n  \"repos\": [],\n  \"groups\": []\n}\n");
+        let _ = fs::write(&path, "{\n}\n");
     }
     let mut command = Command::new("sh");
     command.args(["-c", "${VISUAL:-${EDITOR:-vi}} \"$1\"", "sh"]).arg(path);
     command
 }
 
-const COMMANDS: [crate::Command; 12] = [
-    ("Generate a guide for this merge request", "g", KeyCode::Char('g')),
-    ("Reset settings: start over with a blank config (keeps a backup)", "", KeyCode::F(10)),
-    ("Set up revui with an agent", "", KeyCode::F(11)),
-    ("Open this merge request", "enter", KeyCode::Enter),
-    ("Search the list", "f", KeyCode::Char('f')),
-    ("Leave the search bar, then clear the search, then quit", "esc", KeyCode::Esc),
-    ("Refresh the list", "r", KeyCode::Char('r')),
-    ("Show open merge requests", "o", KeyCode::Char('o')),
-    ("Show merged merge requests", "m", KeyCode::Char('m')),
-    ("Show merge requests grouped by issue", "i", KeyCode::Char('i')),
+const COMMANDS: [crate::Command; 7] = [
+    ("Open this review", "enter", KeyCode::Enter),
+    ("Type or paste a link to start a review, or filter your reviews", "tab", KeyCode::Tab),
+    ("Rescan your reviews", "r", KeyCode::Char('r')),
     ("Settings: edit the config file", ", or e", KeyCode::Char(',')),
+    ("Set up revui with an agent", "", KeyCode::F(11)),
+    ("Reset settings: start over with a blank config (keeps a backup)", "", KeyCode::F(10)),
     ("Quit", "q", KeyCode::Char('q')),
 ];
 
-pub fn browse(terminal: &mut DefaultTerminal, images: Picker) -> io::Result<()> {
-    let mut list = MrList::default();
+/// The front door: paste a link to start a review, or pick up one you opened before.
+pub fn browse(terminal: &mut DefaultTerminal, images: Picker, first: Option<String>) -> io::Result<()> {
+    let mut home = Home::default();
+    apply_accent();
+    home.scan();
+    home.typing = home.past.is_empty();
     let mut pending = None;
-    list.welcome = !config_path().exists();
-    list.load();
+    let mut pasted = first;
     let mut redraw = true;
     loop {
-        list.absorb();
-        crate::fade(&mut list.message);
-        let shown = list.tabs.shown;
-        for name in list.tabs.tick() {
-            list.message = format!("{name} exited right away with an error. Check its command in the config.");
+        crate::fade(&mut home.message);
+        let shown = home.tabs.shown;
+        for name in home.tabs.tick() {
+            home.message = format!("{name} exited right away with an error. Check its command in the config.");
         }
-        let configuring = list.tabs.has("settings") || list.tabs.has("setup");
-        if std::mem::replace(&mut list.configuring, configuring) && !configuring {
-            list.load();
+        let configuring = home.tabs.has("settings") || home.tabs.has("setup");
+        if std::mem::replace(&mut home.configuring, configuring) && !configuring {
+            apply_accent();
         }
-        if redraw || shown != list.tabs.shown {
+        // A review in progress keeps landing findings: keep its row current.
+        if !home.tabs.is_empty() && home.scanned.is_none_or(|at| at.elapsed().as_millis() > 1500) {
+            home.scan();
+        }
+        if redraw || shown != home.tabs.shown {
             terminal.draw(|f| {
-                list.draw(f);
-                list.tabs.draw(f, "back to the list");
+                home.draw(f);
+                home.tabs.draw(f, "back to your reviews");
             })?;
         }
         redraw = true;
-        if let Some(text) = list.clipboard.take().or(list.tabs.clipboard.take()) {
+        if let Some(text) = home.clipboard.take().or(home.tabs.clipboard.take()) {
             crate::copy(&text);
         }
-        if list.tabs.shown {
+        if home.tabs.shown {
             match event::poll(std::time::Duration::from_millis(30))? {
-                true => list.tabs.handle(event::read()?),
-                false => redraw = list.tabs.changed(),
+                true => home.tabs.handle(event::read()?),
+                false => redraw = home.tabs.changed(),
             }
             continue;
         }
-        let mut open = false;
-        let waiting = !list.generating.is_empty() || !list.fetches.is_empty() || list.lookup.is_some() || list.message.starts_with("Copied ");
-        if waiting && pending.is_none() && !event::poll(std::time::Duration::from_millis(120))? {
-            let done: Vec<String> = list.generating.iter().filter(|(_, dir)| has_guide(dir)).map(|(url, _)| url.clone()).collect();
-            list.generating.retain(|(url, _)| !done.contains(url));
-            for mr in list.mrs.iter_mut().filter(|mr| done.contains(&mr.web_url)) {
-                (mr.guide, mr.older_guide) = (true, false);
-            }
+        let waiting = !home.tabs.is_empty() || home.message.starts_with("Copied ");
+        if waiting && pending.is_none() && pasted.is_none() && !event::poll(std::time::Duration::from_millis(150))? {
             continue;
         }
-        let code = match pending.take() {
-            Some(code) => code,
-            None => match event::read()? {
+        let modal = home.help || home.palette.is_some();
+        let code = match (pending.take(), pasted.is_some()) {
+            (Some(code), _) => code,
+            (None, true) => KeyCode::Null,
+            (None, false) => match event::read()? {
+                Event::Paste(_) if modal => continue,
+                Event::Paste(text) => match link(&text) {
+                    Some(url) => {
+                        pasted = Some(url);
+                        KeyCode::Null
+                    }
+                    None => {
+                        let mut chars: Vec<char> = home.field.chars().collect();
+                        let at = home.cursor.min(chars.len());
+                        let clean: Vec<char> = text.chars().filter(|c| !c.is_control()).collect();
+                        chars.splice(at..at, clean.iter().copied());
+                        (home.field, home.cursor, home.typing, home.sel) = (chars.into_iter().collect(), at + clean.len(), true, 0);
+                        continue;
+                    }
+                },
                 Event::Mouse(m) => {
                     let at = Position::new(m.column, m.row);
-                    let modal = list.help || list.welcome || list.confirm.is_some() || list.palette.is_some();
                     match m.kind {
                         MouseEventKind::Down(_) if modal => {
-                            pending = list.buttons.iter().find(|(area, _)| area.contains(at)).map(|&(_, code)| code);
-                            if list.palette.is_some() && pending.is_some_and(|code| !matches!(code, KeyCode::Enter | KeyCode::Esc)) {
-                                list.palette = None;
+                            pending = home.buttons.iter().find(|(area, _)| area.contains(at)).map(|&(_, code)| code);
+                            if home.palette.is_some() && pending.is_some_and(|code| !matches!(code, KeyCode::Enter | KeyCode::Esc)) {
+                                home.palette = None;
                             }
-                            list.selecting = pending.is_none().then_some((at, at));
+                            home.selecting = pending.is_none().then_some((at, at));
                         }
-                        MouseEventKind::Drag(_) if modal => list.selecting = list.selecting.map(|(start, _)| (start, at)),
-                        MouseEventKind::Up(_) if modal => match list.selecting {
-                            Some((start, end)) if start != end => list.copy = true,
-                            _ => list.selecting = None,
+                        MouseEventKind::Drag(_) if modal => home.selecting = home.selecting.map(|(start, _)| (start, at)),
+                        MouseEventKind::Up(_) if modal => match home.selecting {
+                            Some((start, end)) if start != end => home.copy = true,
+                            _ => home.selecting = None,
                         },
                         _ if modal => {}
-                        MouseEventKind::Down(_) if list.actions.iter().any(|(button, _)| button.contains(at)) => {
-                            pending = list.actions.iter().find(|(button, _)| button.contains(at)).map(|&(_, code)| code);
+                        MouseEventKind::Down(_) if home.actions.iter().any(|(button, _)| button.contains(at)) => {
+                            home.typing = false;
+                            pending = home.actions.iter().find(|(button, _)| button.contains(at)).map(|&(_, code)| code);
                         }
-                        MouseEventKind::Down(_) if list.state_tabs.iter().any(|tab| tab.contains(at)) => {
-                            let wanted = list.state_tabs.iter().position(|tab| tab.contains(at)).unwrap_or(list.view);
-                            pending = (wanted != list.view).then_some(KeyCode::Char(['o', 'm', 'i'][wanted]));
+                        MouseEventKind::Down(_) if home.field_area.contains(at) => {
+                            let clicked = (m.column as usize).saturating_sub(home.field_area.x as usize + 3);
+                            (home.typing, home.cursor) = (true, clicked.min(home.field.chars().count()));
                         }
-                        MouseEventKind::Down(_) if list.search_area.contains(at) => {
-                            let clicked = (m.column as usize).saturating_sub(list.search_area.x as usize + 9);
-                            (list.filtering, list.cursor) = (true, clicked.min(list.filter.chars().count()));
-                        }
-                        MouseEventKind::Down(_) if list.filtering => list.filtering = list.visible().is_empty() && !list.mrs.is_empty(),
-                        MouseEventKind::ScrollDown => list.sel += 1,
-                        MouseEventKind::ScrollUp => list.sel = list.sel.saturating_sub(1),
-                        MouseEventKind::Down(_) if list.body.contains(at) => {
-                            let row = list.state.offset() + (m.row - list.body.y) as usize;
-                            if row < list.entries().len() {
-                                pending = (list.sel == row).then_some(KeyCode::Enter);
-                                list.sel = row;
+                        MouseEventKind::ScrollDown => home.sel += 1,
+                        MouseEventKind::ScrollUp => home.sel = home.sel.saturating_sub(1),
+                        MouseEventKind::Down(_) if home.body.contains(at) => {
+                            let row = home.state.offset() + (m.row - home.body.y) as usize;
+                            if row < home.visible().len() {
+                                pending = (home.sel == row && !home.typing).then_some(KeyCode::Enter);
+                                (home.sel, home.typing) = (row, false);
                             }
                         }
                         _ => {}
@@ -1266,161 +999,114 @@ pub fn browse(terminal: &mut DefaultTerminal, images: Picker) -> io::Result<()> 
                     continue;
                 }
                 Event::Key(key) if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
-                Event::Key(key) if key.kind == KeyEventKind::Press && list.palette.is_some() && !matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Up | KeyCode::Down) => {
-                    if let Some((filter, selected)) = list.palette.as_mut() {
+                Event::Key(key) if key.kind == KeyEventKind::Press && home.palette.is_some() && !matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Up | KeyCode::Down) => {
+                    if let Some((filter, selected)) = home.palette.as_mut() {
                         let before = filter.clone();
-                        crate::edit(filter, &mut list.palette_cursor, key);
+                        crate::edit(filter, &mut home.palette_cursor, key);
                         if *filter != before {
                             *selected = 0;
                         }
                     }
                     continue;
                 }
-                Event::Key(key) if key.kind == KeyEventKind::Press && list.filtering && !list.help && list.palette.is_none() && list.confirm.is_none() && !list.welcome => {
-                    let none = list.visible().is_empty() && !list.mrs.is_empty();
+                Event::Key(key) if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL) => KeyCode::F(12),
+                Event::Key(key) if key.kind == KeyEventKind::Press && home.typing && !modal => {
+                    let count = home.visible().len();
                     match key.code {
-                        KeyCode::Esc if none => (list.filter, list.cursor) = (String::new(), 0),
-                        KeyCode::Enter | KeyCode::Tab | KeyCode::BackTab | KeyCode::Down | KeyCode::Up if none => {}
-                        KeyCode::Enter | KeyCode::Tab | KeyCode::BackTab | KeyCode::Down | KeyCode::Esc => (list.filtering, list.sel) = (false, 0),
-                        KeyCode::Up => (list.filtering, list.sel) = (false, list.entries().len().saturating_sub(1)),
+                        KeyCode::Esc if home.field.is_empty() && home.past.is_empty() => return Ok(()),
+                        KeyCode::Esc => (home.field, home.cursor, home.typing, home.sel) = (String::new(), 0, home.past.is_empty(), 0),
+                        KeyCode::Enter => match (link(&home.field), home.field.trim().is_empty(), count) {
+                            (Some(url), _, _) => pasted = Some(url),
+                            (_, true, 0) => {}
+                            (_, true, _) => home.typing = false,
+                            (_, _, 0) => home.message = "That is not a merge request or pull request link, and no review matches it.".into(),
+                            _ => (home.typing, pending) = (false, Some(KeyCode::Enter)),
+                        },
+                        KeyCode::Down | KeyCode::Tab | KeyCode::BackTab if count > 0 => home.typing = false,
+                        KeyCode::Up if count > 0 => (home.typing, home.sel) = (false, count - 1),
+                        KeyCode::Down | KeyCode::Up | KeyCode::Tab | KeyCode::BackTab => {}
                         _ => {
-                            crate::edit(&mut list.filter, &mut list.cursor, key);
-                            list.sel = 0;
+                            crate::edit(&mut home.field, &mut home.cursor, key);
+                            home.sel = 0;
                         }
                     }
                     continue;
                 }
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                    KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => KeyCode::F(12),
                     KeyCode::Char('/') if key.modifiers.contains(KeyModifiers::SHIFT) => KeyCode::Char('?'),
                     code => code,
                 },
                 _ => continue,
             },
         };
-        list.selecting = None;
-        if list.help {
-            list.help = false;
+        home.selecting = None;
+        if home.help {
+            home.help = false;
             continue;
         }
-        if let Some(mr) = list.confirm.take() {
-            match code {
-                KeyCode::Char('y') => {
-                    list.busy = Some(format!("Fetching {}", mr.reference()));
-                    let fetching = mr.clone();
-                    let fetched = crate::wait(terminal, |frame| list.draw(frame), move || fetching.materialize())?;
-                    list.busy = None;
-                    let screen = terminal.size()?.into();
-                    let started = fetched.and_then(|dir| {
-                        let (script, modal) = generate_settings();
-                        let mut sh = Command::new("sh");
-                        sh.args(["-c", &script]).env("REVUI_CLAUDE", claude()).env("REVUI_URL", &mr.web_url).env("REVUI_DIR", &dir);
-                        if modal {
-                            let name = format!("guide {}", mr.reference());
-                            list.tabs.close(&name);
-                            list.tabs.run(&name, &sh, screen)?;
-                            return Ok(dir);
-                        }
-                        let log = fs::File::create(dir.join("generate.log")).map_err(|e| e.to_string())?;
-                        sh.stdin(std::process::Stdio::null()).stdout(log.try_clone().map_err(|e| e.to_string())?).stderr(log);
-                        sh.spawn().map_err(|e| e.to_string())?;
-                        Ok(dir)
-                    });
-                    match started {
-                        Ok(dir) => list.generating.push((mr.web_url.clone(), dir)),
-                        Err(e) => list.message = format!("Could not start the generator: {e}"),
-                    }
-                }
-                KeyCode::Char('n' | 'q') | KeyCode::Esc => {}
-                _ => list.confirm = Some(mr),
-            }
+        if home.palette.is_some() {
+            pending = crate::palette_key(&COMMANDS, &mut home.palette, code);
             continue;
         }
-        if list.welcome {
-            match code {
-                KeyCode::Char('a') => (list.welcome, pending) = (false, Some(KeyCode::F(11))),
-                KeyCode::Char('e') => (list.welcome, pending) = (false, Some(KeyCode::Char(','))),
-                KeyCode::Esc | KeyCode::Char('n' | 'q') => list.welcome = false,
-                _ => {}
-            }
-            continue;
-        }
-        if list.palette.is_some() {
-            pending = crate::palette_key(&COMMANDS, &mut list.palette, code);
-            continue;
-        }
-        list.filtering = false;
+        let count = home.visible().len().max(1);
         match code {
             KeyCode::Char('q') => return Ok(()),
-            KeyCode::Char('/') => (list.palette, list.palette_cursor) = (Some((String::new(), 0)), 0),
-            KeyCode::Char('?') => list.help = true,
-            KeyCode::Char('f') | KeyCode::Tab | KeyCode::BackTab => (list.filtering, list.cursor) = (true, list.filter.chars().count()),
-            KeyCode::Char('j') | KeyCode::Down => list.sel = (list.sel + 1) % list.entries().len().max(1),
-            KeyCode::Char('k') | KeyCode::Up => {
-                let count = list.entries().len().max(1);
-                list.sel = (list.sel + count - 1) % count;
-            }
-            KeyCode::Esc if !list.filter.is_empty() => (list.filter, list.cursor) = (String::new(), 0),
+            KeyCode::Esc if !home.field.is_empty() => (home.field, home.cursor, home.sel) = (String::new(), 0, 0),
             KeyCode::Esc => return Ok(()),
-            KeyCode::Char('r') => list.load(),
-            KeyCode::Char(view @ ('o' | 'm' | 'i')) => {
-                let wanted = ['o', 'm', 'i'].iter().position(|key| *key == view).unwrap_or(0);
-                if wanted != list.view {
-                    list.show(wanted);
-                }
-            }
-            KeyCode::Char('l' | ' ') | KeyCode::Right | KeyCode::Left | KeyCode::Char('h') => {
-                list.toggle();
-            }
-            KeyCode::Char('g') => list.confirm = list.picked(),
-            KeyCode::F(12) if list.tabs.is_empty() => list.message = "No tab is open: , opens settings in one.".into(),
-            KeyCode::F(12) => list.tabs.open(),
+            KeyCode::Char('/') => (home.palette, home.palette_cursor) = (Some((String::new(), 0)), 0),
+            KeyCode::Char('?') => home.help = true,
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('f' | 'n' | 'i') => (home.typing, home.cursor) = (true, home.field.chars().count()),
+            KeyCode::Char('j') | KeyCode::Down => home.sel = (home.sel + 1) % count,
+            KeyCode::Char('k') | KeyCode::Up => home.sel = (home.sel + count - 1) % count,
+            KeyCode::Char('r') => home.scan(),
+            KeyCode::F(12) if home.tabs.is_empty() => home.message = "No agent is open: one starts when you paste a link.".into(),
+            KeyCode::F(12) => home.tabs.open(),
             KeyCode::Char('e' | ',') => {
-                if let Err(e) = list.tabs.run("settings", &config_editor(), terminal.size()?.into()) {
-                    list.message = format!("Could not open the config in your editor: {e}");
+                if let Err(e) = home.tabs.run("settings", &config_editor(), terminal.size()?.into()) {
+                    home.message = format!("Could not open the config in your editor: {e}");
                 }
             }
             KeyCode::F(10) => {
-                list.message = match reset_config() {
+                home.message = match reset_config() {
                     Some(backup) => format!("Settings reset. The old config is at {}", backup.display()),
                     None => "There was no config to reset.".into(),
                 };
-                list.mrs.clear();
-                list.welcome = true;
             }
             KeyCode::F(11) => {
                 let agent = agents().remove(0);
                 let mut command = Command::new("sh");
                 command.args(["-c", &agent.run]).env("REVUI_CLAUDE", claude()).env("REVUI_PROMPT", crate::SETUP_PROMPT).env("REVUI_SESSION_ID", crate::uuid());
                 let typing = (agent.modal && !agent.run.contains("REVUI_PROMPT")).then(|| crate::SETUP_PROMPT.to_string());
-                if let Err(e) = list.tabs.run_typing("setup", &command, terminal.size()?.into(), typing) {
-                    list.message = format!("Could not start a coding agent ({e}). Paste this into yours: {}", crate::SETUP_PROMPT);
+                if let Err(e) = home.tabs.run_typing("setup", &command, terminal.size()?.into(), typing) {
+                    home.message = format!("Could not start a coding agent ({e}). Paste this into yours: {}", crate::SETUP_PROMPT);
                 }
             }
-            KeyCode::Enter => open = true,
             _ => {}
         }
-        if open {
-            list.toggle();
-        }
-        let picked = list.picked().filter(|_| open);
-        if let Some(mr) = picked {
-            list.busy = Some(format!("Fetching {}", mr.reference()));
-            let load = move || {
-                let current = mr.materialize()?;
-                let guided = (!has_guide(&current)).then(|| mr.earlier_guide()).flatten();
-                let mut bundle = Bundle::load(guided.as_ref().unwrap_or(&current))?;
-                bundle.successor = guided.is_some().then_some(current);
-                Ok::<_, String>(bundle)
+        // A pasted link starts a review at once. A row opens what is there, after asking the host whether the head moved.
+        let target = match (pasted.take(), code) {
+            (Some(url), _) => Some((url, None, true)),
+            (None, KeyCode::Enter) => home.picked().map(|past| (past.url, Some(past.dir), false)),
+            _ => None,
+        };
+        if let Some((url, dir, start)) = target {
+            let short = link(&url).and_then(|url| url.rsplit('/').next().map(String::from)).unwrap_or_default();
+            home.busy = Some(format!("Fetching {}", if short.is_empty() { "the review".to_string() } else { format!("#{short}") }));
+            let load = move || match (url.is_empty(), dir) {
+                (true, Some(dir)) => Bundle::load(&dir),
+                (_, Some(dir)) => open_url(&url).or_else(|problem| Bundle::load(&dir).map_err(|_| problem)),
+                (_, None) => open_url(&url),
             };
-            let opened = crate::wait(terminal, |frame| list.draw(frame), load)?;
-            list.busy = None;
+            let opened = crate::wait(terminal, |frame| home.draw(frame), load)?;
+            home.busy = None;
             match opened {
-                Ok(bundle) => list.tabs = crate::review(terminal, bundle, images.clone(), std::mem::take(&mut list.tabs))?,
-                Err(e) => {
-                    list.message = e;
-                    list.filter.clear();
+                Ok(bundle) => {
+                    (home.field, home.cursor, home.typing) = (String::new(), 0, false);
+                    home.tabs = crate::review(terminal, bundle, images.clone(), std::mem::take(&mut home.tabs), start)?;
+                    home.scan();
+                    home.sel = 0;
                 }
+                Err(e) => home.message = e,
             }
         }
     }
@@ -1439,69 +1125,57 @@ pub fn sample() -> Mr {
 
 #[cfg(test)]
 #[test]
-fn filter_terms_all_have_to_match() {
-    let mr = sample();
-    assert!(mr.matches("api retry"));
-    assert!(mr.matches("ALEX !7"));
-    assert!(!mr.matches("api payments"));
+fn a_link_is_found_in_whatever_was_pasted() {
+    assert_eq!(link("  https://github.com/shop/api/pull/12/files#diff-1\n").as_deref(), Some("https://github.com/shop/api/pull/12/files#diff-1"));
+    assert_eq!(link("see <https://gitlab.com/group/sub/project/-/merge_requests/7>, thanks").as_deref(), Some("https://gitlab.com/group/sub/project/-/merge_requests/7"));
+    assert!(link("retry submit").is_none() && link("https://github.com/shop/api/issues/12").is_none());
 }
 
 #[cfg(test)]
 #[test]
-fn the_list_asks_before_generating_a_guide() {
-    let mut list = MrList { mrs: vec![sample()], confirm: Some(sample()), ..Default::default() };
-    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
-    terminal.draw(|frame| list.draw(frame)).unwrap();
-    let screen = format!("{}", terminal.backend());
-    assert!(screen.contains("Generate a guide") && screen.contains("api !7") && screen.contains("y · Start"));
-    assert_eq!(list.buttons[0].1, KeyCode::Char('y'));
-    assert!(screen.contains("Search") && screen.contains("Search · f"));
-    (list.confirm, list.help) = (None, true);
-    let mut tall = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 44)).unwrap();
-    tall.draw(|frame| list.draw(frame)).unwrap();
-    let screen = format!("{}", tall.backend());
-    assert!(screen.contains("A review, start to finish") && screen.contains("esc · Close"));
-}
+fn your_reviews_are_read_from_the_bundles_on_disk() {
+    let root = std::env::temp_dir().join(format!("revui-history-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let (old_head, new_head, other) = (root.join("shop__api-7-aaaaaaaa"), root.join("shop__api-7-bbbbbbbb"), root.join("shop__web-3-cccccccc"));
+    for dir in [&old_head, &new_head] {
+        sample().write_bundle(dir, "").unwrap();
+    }
+    let mut second = sample();
+    (second.iid, second.title, second.web_url) = (3, "Tidy the cart".into(), "https://example.com/shop/web/-/merge_requests/3".into());
+    second.references = References { full: "shop/web!3".into() };
+    second.write_bundle(&other, "").unwrap();
+    let guide = r#"{"title": "Retry order submission", "working": "Reviewing part 2 of 3: Retry the submit call",
+        "sources": [{"id": "mr", "head_sha": "aaaaaaaa", "patch": "mr.patch", "url": "https://example.com/shop/api/-/merge_requests/7", "reference": "!7", "repo": "shop/api", "author": "@sam"}],
+        "sections": [{"title": "Retry", "why": "x", "hunks": []}],
+        "items": [{"id": "B1", "kind": "finding", "title": "t", "body": "b"}]}"#;
+    fs::write(old_head.join("review.json"), guide).unwrap();
+    fs::write(old_head.join("state.json"), r#"{"verdicts": {"B1": "agree"}, "notes": [{"text": "hm", "posted": false}]}"#).unwrap();
 
-#[cfg(test)]
-#[test]
-fn issues_view_groups_merge_requests_by_ticket() {
-    let with = |title: &str, branch: &str, url: &str, state: &str| {
-        let mut mr = sample();
-        (mr.title, mr.source_branch, mr.web_url, mr.state) = (title.into(), branch.into(), url.into(), state.into());
-        mr
-    };
-    let api = with("feat(ENG-472): sync order outcomes", "x", "u1", "opened");
-    let second = with("Draft: preserve outcomes", "eng-472-preserve-outcomes", "u2", "merged");
-    let other = with("Tidy the readme", "tidy", "u3", "opened");
-    assert_eq!((api.issue(), second.issue(), other.issue()), ("ENG-472".to_string(), "ENG-472".to_string(), "No ticket".to_string()));
-    assert_eq!(api.issue_title(), "sync order outcomes");
+    let found = history(&root);
+    assert_eq!(found.len(), 2, "two heads of one merge request show once");
+    let api = found.iter().find(|past| past.reference == "!7").unwrap();
+    assert!(api.guide && api.dir == old_head, "the head that has the guide is the one shown");
+    assert_eq!((api.items, api.marked, api.drafts, api.name().as_str()), (1, 1, 1, "api!7"));
+    assert!(api.working.starts_with("Reviewing part 2") && api.matches("API retry") && !api.matches("cart"));
 
-    let shipped = with("fix(ENG-9): already merged", "x", "u4", "merged");
-    let mut list = MrList { view: 2, mrs: vec![other, api, second, shipped], ..Default::default() };
-    assert!(matches!(list.entries().as_slice(), [Entry::Issue(first), Entry::Issue(last)] if first == "ENG-472" && last == "No ticket"));
-    list.expanded.insert("ENG-472".into());
-    assert_eq!(list.entries().len(), 4, "an expanded issue lists its two merge requests, and an issue with nothing open is left out");
-    list.sel = 1;
-    assert_eq!(list.picked().map(|mr| mr.web_url), Some("u1".to_string()));
-    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 20)).unwrap();
-    terminal.draw(|frame| list.draw(frame)).unwrap();
+    let mut home = Home { past: found, ..Default::default() };
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(150, 12)).unwrap();
+    terminal.draw(|frame| home.draw(frame)).unwrap();
     let screen = format!("{}", terminal.backend());
-    assert!(screen.contains("▾ ENG-472") && screen.contains("1 open · 1 merged") && screen.contains("▸ No ticket"));
-    assert!(screen.contains("add a Linear key in settings"));
+    assert!(screen.contains("2 reviews") && screen.contains("Paste a merge request or pull request link"));
+    assert!(screen.contains("unfinished") && screen.contains("api!7") && screen.contains("1 of 1 marked") && screen.contains("1 unpublished"));
+    assert!(screen.contains("diff") && screen.contains("web!3") && screen.contains("Tidy the cart"));
+    home.field = "cart".into();
+    terminal.draw(|frame| home.draw(frame)).unwrap();
+    let screen = format!("{}", terminal.backend());
+    assert!(screen.contains("1 of 2 reviews") && !screen.contains("api!7"), "typing something that is not a link filters");
+    home.field = "https://github.com/shop/api/pull/12".into();
+    assert_eq!(home.visible().len(), 2, "a link in the field is not a filter");
 
-    let reply = r#"{"data":{"issues":{"nodes":[{"identifier":"ENG-472","title":"Sync outcomes","project":{"name":"Checkout rework"}},{"identifier":"ENG-9","title":"Loose","project":null}]}}}"#;
-    list.projects = parse_projects(reply).unwrap();
-    assert_eq!(parse_projects(r#"{"errors":[{"message":"Authentication required"}]}"#).unwrap_err(), "Authentication required");
-    assert!(matches!(list.entries().as_slice(), [Entry::Project(first), Entry::Issue(_), Entry::Mr(_), Entry::Mr(_), Entry::Project(last), Entry::Issue(_)] if first == "Checkout rework" && last == "No project"));
-    list.filter = "checkout rew".into();
-    assert_eq!(list.entries().len(), 4, "searching a project name keeps its issues");
-    list.filter.clear();
-    list.sel = 0;
-    assert!(list.toggle() && list.entries().len() == 3, "folding a project hides its issues");
-    terminal.draw(|frame| list.draw(frame)).unwrap();
-    let screen = format!("{}", terminal.backend());
-    assert!(screen.contains("▸ Checkout rework  1 issue · 1 open · 1 merged") && screen.contains("▾ No project"));
+    let mut empty = Home::default();
+    terminal.draw(|frame| empty.draw(frame)).unwrap();
+    assert!(format!("{}", terminal.backend()).contains("Nothing reviewed here yet"));
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[cfg(test)]
@@ -1514,11 +1188,8 @@ fn github_pull_requests_map_onto_the_same_shapes() {
     )
     .unwrap();
     let mr = from_github(&pr, "shop/api").unwrap();
-    assert_eq!((mr.repo(), mr.reference(), mr.state.as_str(), mr.github()), ("shop/api", "#12".to_string(), "merged", true));
-    assert!(mr.matches("alex #12 retry") && mr.matches("platform") && !sample().github() && sample().reference() == "!7");
-    assert_eq!(github_repo("https://github.com/shop/api/", ""), Some("shop/api".into()));
-    assert_eq!((github_repo("shop/api", ""), github_repo("shop/api", "github")), (None, Some("shop/api".into())));
-    assert_eq!((gitlab_repo("gitlab.com/group/sub/project"), gitlab_repo("group/project")), ("group/sub/project".into(), "group/project".into()));
+    assert_eq!((mr.repo(), mr.reference(), mr.github()), ("shop/api", "#12".to_string(), true));
+    assert!(!sample().github() && sample().reference() == "!7");
     assert_eq!(file_url("https://github.com/shop/api/pull/12", "abc", "src/a.ts", 4).unwrap(), "https://github.com/shop/api/blob/abc/src/a.ts#L4");
     assert_eq!(file_url("https://example.com/shop/api/-/merge_requests/7", "abc", "src/a.ts", 4).unwrap(), "https://example.com/shop/api/-/blob/abc/src/a.ts#L4");
 
@@ -1541,34 +1212,18 @@ fn github_pull_requests_map_onto_the_same_shapes() {
 #[test]
 #[ignore]
 fn live_code_host_reads() {
-    let named = std::env::var("REVUI_LIVE").expect("set REVUI_LIVE to owner/repo#12 or group/project!12");
-    let at = named.rfind(['#', '!']).unwrap();
-    let (repo, reference) = (&named[..at], &named[at..]);
-    let found = threads(repo, reference);
+    let url = std::env::var("REVUI_LIVE").expect("set REVUI_LIVE to the URL of a merge request or pull request");
+    let mr = lookup(&url).unwrap();
+    let (repo, reference) = (mr.repo().to_string(), mr.reference());
+    println!("{repo} {reference}: {:?} at {}", mr.title, mr.sha());
+    let found = threads(&repo, &reference);
     println!("{} threads", found.len());
     for thread in found.iter().take(6) {
         let first = &thread.notes[0];
         println!("  {} {:?}:{:?} old={} resolved={} replies={} {} {:?}", thread.anchor, thread.file, thread.line, thread.old, thread.resolved, thread.notes.len() - 1, first.0, first.1.chars().take(50).collect::<String>());
     }
-    println!("dates {:?}", dates(repo, reference));
-    let host = if on_github(reference) { "github" } else { "" };
-    let listed = fetch_all_from(repo, host);
-    println!("{} open; first: {:?}", listed.len(), listed.first().map(|mr| (mr.reference(), mr.title.clone(), mr.sha().to_string())));
-    if let Some(mr) = listed.first() {
-        let base = base_sha(repo, &mr.reference(), mr.sha());
-        println!("base of {} is {base:?}", mr.reference());
-        let readme = raw_file(repo, on_github(reference), mr.sha(), "README.md").unwrap_or_default();
-        println!("README.md at head starts {:?}", readme.lines().next());
-    }
-}
-
-#[cfg(test)]
-fn fetch_all_from(repo: &str, host: &str) -> Vec<Mr> {
-    match github_repo(repo, host) {
-        Some(repo) => {
-            let found = gh(&["pr", "list", "-R", &repo, "--state", "open", "-L", "5", "--search", "sort:updated-desc", "--json", PR_FIELDS]).unwrap();
-            serde_json::from_str::<Vec<serde_json::Value>>(&found).unwrap().iter().filter_map(|pr| from_github(pr, &repo)).collect()
-        }
-        None => serde_json::from_str(&glab(&["mr", "list", "-R", repo, "-F", "json", "-P", "5"]).unwrap()).unwrap(),
-    }
+    println!("dates {:?}", dates(&repo, &reference));
+    println!("base of {reference} is {:?}", base_sha(&repo, &reference, mr.sha()));
+    let readme = raw_file(&repo, on_github(&reference), mr.sha(), "README.md").unwrap_or_default();
+    println!("README.md at head starts {:?}", readme.lines().next());
 }

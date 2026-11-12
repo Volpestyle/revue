@@ -399,13 +399,14 @@ pub(crate) fn detail(app: &App, width: usize) -> Rows {
                 _ => Color::DarkGray,
             };
             let bold = plain.add_modifier(Modifier::BOLD);
-            let mut heading = vec![Span::styled(format!("Part {} of {}", g + 1, bundle.review.sections.len()), bold)];
+            paragraph(&mut rows, &section.title, width, "", bold, None);
+            let mut heading = Vec::new();
             if !section.tier.is_empty() {
-                heading.extend([Span::styled(" · ", dim), Span::styled(tier_label(&section.tier).to_string(), bold.fg(color))]);
+                heading.extend([Span::styled(tier_label(&section.tier).to_string(), bold.fg(color)), Span::styled(" · ", dim)]);
             }
             let count = format!("{} file{}", files.len(), if files.len() == 1 { "" } else { "s" });
             let found = if raised { "" } else { " · nothing raised here" };
-            heading.push(Span::styled(format!(" · {count}{found}"), dim));
+            heading.push(Span::styled(format!("{count}{found}"), dim));
             rows.push((Line::from(heading), None));
             paragraph(&mut rows, "", width, "", plain, None);
         }
@@ -450,6 +451,14 @@ pub(crate) fn detail(app: &App, width: usize) -> Rows {
             (Some(_), false) => (idle, on(Color::Red), "  not raised"),
             (None, _) => (idle, idle, ""),
         };
+        let commented = app.state.notes.iter().any(|note| !note.posted && note.item.as_ref() == Some(&item.id));
+        let after = match (verdict.is_some(), app.quoted(&item.id), commented) {
+            (false, _, _) => after,
+            (_, true, true) => "  goes out quoted, with your comment",
+            (_, true, false) => "  goes out quoted",
+            (_, false, true) => "  only your comment goes out",
+            (_, false, false) => "  nothing goes out",
+        };
         let line = vec![Span::styled(yes, yes_style), Span::raw(" "), Span::styled(no, no_style), Span::styled(after, dim)];
         rows.push((Line::from(line), None));
     }
@@ -482,7 +491,7 @@ pub(crate) fn detail(app: &App, width: usize) -> Rows {
         rows.push((Line::from(vec![Span::raw(cursor), number, provenance(evidence.provenance), picture, picked]), Some(n)));
         paragraph(&mut rows, &evidence.caption, width, "    ", if selected { bold } else { plain }, Some(n));
         if evidence.path.is_some() || evidence.repro.is_some() || evidence.text.is_some() {
-            let fold = if open { "    ▾ details" } else { "    ▸ details · ctrl-o" };
+            let fold = if open { "    ▾ details" } else { "    ▸ details" };
             rows.push((Line::styled(fold, dim), Some(n)));
         }
         if !open {
@@ -512,19 +521,35 @@ pub(crate) fn detail(app: &App, width: usize) -> Rows {
     rows
 }
 
-fn pane(title: &str, focused: bool) -> Block<'static> {
-    let (border, kind, label) = match focused {
-        true => (Style::new().fg(accent()), BorderType::Thick, Style::new().fg(Color::Black).bg(accent()).add_modifier(Modifier::BOLD)),
-        false => (Style::new().fg(Color::DarkGray), BorderType::Plain, Style::new().fg(Color::DarkGray)),
+/// A pane keeps a one-cell edge all round, mostly blank: a thin rule on the left and, for a pane
+/// stacked under another, along the top. Focus shows in the title, not in the edge.
+fn pane(title: &str, focused: bool, left: bool, top: bool) -> Block<'static> {
+    let label = match focused {
+        true => Style::new().fg(accent()).add_modifier(Modifier::BOLD),
+        false => Style::new().fg(Color::DarkGray),
     };
-    Block::bordered().border_type(kind).border_style(border).title(Span::styled(format!(" {title} "), label))
+    let (side, rule) = (if left { "│" } else { " " }, if top { "─" } else { " " });
+    let edge = ratatui::symbols::border::Set {
+        top_left: match (left, top) {
+            (true, true) => "├",
+            (true, false) => "│",
+            _ => rule,
+        },
+        top_right: rule,
+        bottom_left: side,
+        bottom_right: " ",
+        vertical_left: side,
+        vertical_right: " ",
+        horizontal_top: rule,
+        horizontal_bottom: " ",
+    };
+    Block::bordered().border_set(edge).border_style(Style::new().fg(Color::DarkGray)).title(Span::styled(format!(" {title} "), label))
 }
 
 fn draw_image(app: &mut App, frame: &mut Frame, area: Rect, path: PathBuf) {
     let shown = app.item().and_then(|item| item.evidence.iter().position(|e| e.path.as_ref().is_some_and(|p| path.ends_with(p))));
-    let pictures = app.item().map_or(0, |item| item.evidence.iter().filter(|e| e.path.is_some()).count());
     let (_, kind) = artifact_kind(&path.to_string_lossy());
-    let mut keys = if app.focus == 3 && pictures > 0 { "j/k evidence · o opens · z zooms" } else { "o opens · z zooms" }.to_string();
+    let mut clock_shown = String::new();
     let mut failed = None;
     if kind == "recording" {
         let covered = app.layered();
@@ -536,13 +561,11 @@ fn draw_image(app: &mut App, frame: &mut Frame, area: Rect, path: PathBuf) {
             }
         }
         failed = video.error();
-        keys = match (video.playing(), video.length()) {
-            (true, Some(length)) => format!("{} / {} · space pause · o opens · z zooms", clock(video.position()), clock(length)),
-            _ if failed.is_some() => keys,
-            _ => format!("space plays · {keys}"),
-        };
+        if let (true, Some(length)) = (video.playing(), video.length()) {
+            clock_shown = format!(" · {} / {}", clock(video.position()), clock(length));
+        }
     }
-    let title = format!("{kind} for evidence {} · {keys}", shown.map_or(0, |n| n + 1));
+    let title = format!("{kind} · evidence {}{clock_shown}", shown.map_or(0, |n| n + 1));
     app.picture_area = area;
     let picker = &app.picker;
     let layered = app.layered();
@@ -554,7 +577,7 @@ fn draw_image(app: &mut App, frame: &mut Frame, area: Rect, path: PathBuf) {
         };
         Some(picker.new_resize_protocol(decoded))
     });
-    let block = pane(&title, app.focus == 3);
+    let block = pane(&title, app.focus == 3, true, false);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     match image {
@@ -621,7 +644,7 @@ pub fn footer(frame: &mut Frame, area: Rect, wanted: &Wanted, actions: &str, aro
     let after = areas.last().map_or(bottom.x, |(button, _)| button.right());
     let rest = Rect { x: after, width: bottom.right().saturating_sub(after), ..bottom };
     let placed = [(around, Rect { height: 1.min(area.height), ..area }), (actions, rest)];
-    for (text, row) in placed {
+    for (text, row) in placed.into_iter().filter(|(text, _)| !text.is_empty()) {
         frame.render_widget(hints(text), row);
         areas.extend(hint_areas(text, row));
     }
@@ -724,11 +747,20 @@ fn header(app: &App, width: u16) -> Vec<Line<'static>> {
     };
     let second = match (&app.busy, app.note.is_empty()) {
         (Some(busy), _) => Line::from(vec![Span::raw(" "), spinner(), Span::raw(format!(" {busy}…"))]),
-        (None, true) => Line::from(vec![
-            Span::raw(" "),
-            count("verdicts", app.state.verdicts.len(), review.items.len()),
-            Span::styled(format!(" · {rest}"), dim),
-        ]),
+        (None, true) => {
+            let mut line = vec![Span::raw(" ")];
+            let working = review.working.trim();
+            if !working.is_empty() {
+                let found = match review.items.len() {
+                    0 => "no findings yet".to_string(),
+                    1 => "1 finding so far".to_string(),
+                    n => format!("{n} findings so far"),
+                };
+                line.extend([spinner(), Span::styled(format!(" {working} · {found} · "), Style::new().fg(accent()))]);
+            }
+            line.extend([count("verdicts", app.state.verdicts.len(), review.items.len()), Span::styled(format!(" · {rest}"), dim)]);
+            Line::from(line)
+        }
         (None, false) => Line::styled(format!(" {}", app.note), Style::new().fg(Color::Yellow)),
     };
     let mut title = title;
@@ -778,34 +810,43 @@ fn draw_review(app: &mut App, frame: &mut Frame) {
     if app.focus == 3 && app.evidence_path().is_none() {
         app.focus = 1;
     }
-    let tabs = if app.tabs.terms.is_empty() { "" } else { " · ctrl-q tabs" };
-    let around = format!("q/esc back · / commands · ? help · tab pane{tabs} · m open on the web · , settings");
-    let artifact = matches!(app.focus, 1 | 3) && app.evidence_path().is_some();
+    if app.focus == 0 && !app.outline {
+        app.focus = 1;
+    }
     let target = app.open_target().map_or("file".to_string(), |(file, line)| {
         format!("{}:{line}", app.bundle.files[file].path.rsplit('/').next().unwrap_or(""))
     });
-    let many = if app.section_files().len() > 1 { " · O open all its files" } else { "" };
-    let on_web = matches!(app.rows.get(app.sel), Some(Row::Thread(_) | Row::Heading));
-    let open = match (app.artifact_at_cursor(), app.open_target().is_some()) {
-        (true, _) => " · o open artifact".to_string(),
-        (_, true) => format!(" · o open {target}{many}"),
-        _ => String::new(),
+    let generate: Vec<(&str, &str, KeyCode, Color)> = match (app.bundle.successor.is_some(), app.bundle.review.sections.is_empty()) {
+        (true, _) => vec![("g", "Update guide", KeyCode::Char('g'), accent())],
+        (_, true) => vec![("g", "Generate guide", KeyCode::Char('g'), accent())],
+        _ => Vec::new(),
     };
-    let enter = match (app.focus, artifact, on_web) {
-        (0, _, true) => format!("enter open on the web{open}"),
-        (0, _, _) => format!("enter go in{open}"),
-        (3, true, _) if app.recording().is_some() => "space/enter play or pause · o open artifact".to_string(),
-        (3, true, _) => "enter/o open artifact".to_string(),
-        (1, _, _) if app.item().is_some_and(|item| !item.evidence.is_empty()) => format!("space/enter pick for v/i{open}"),
-        _ => format!("enter/o open {target}{many}"),
+    // One row: what the selection takes, then the three keys that find everything else.
+    let verdict = match app.item().map(|item| item.kind) {
+        Some(Kind::Finding) => "a agree · x dismiss · c comment",
+        Some(Kind::Decision) => "a accept · x push back · c comment",
+        _ => "c comment",
     };
-    let (generate, regenerate): (Vec<(&str, &str, KeyCode, Color)>, &str) = match (app.bundle.successor.is_some(), app.bundle.review.sections.is_empty()) {
-        (true, _) => (vec![("g", "Update guide", KeyCode::Char('g'), accent())], ""),
-        (_, true) => (vec![("g", "Generate guide", KeyCode::Char('g'), accent())], ""),
-        _ => (Vec::new(), " · g regenerate"),
+    let recording = app.recording().is_some();
+    let here = match (app.focus, app.rows.get(app.sel).copied()) {
+        (0, Some(Row::Thread(_))) => "enter open on the web · c reply".to_string(),
+        (0, Some(Row::Heading)) => "enter open on the web".to_string(),
+        (0, Some(Row::Note(_))) => "c edit · x delete".to_string(),
+        (0, Some(Row::Item(_))) => format!("{verdict} · enter go in"),
+        (0, _) => format!("j/k move · enter go in · {verdict}"),
+        (2, _) => format!("j/k line · c comment · o open {target} · s layout · d hide"),
+        (3, _) if recording => "space play or pause · o open · z zoom".to_string(),
+        (3, _) => "o open · z zoom".to_string(),
+        _ if app.item().is_some() => format!("{verdict} · v verify · i artifact"),
+        _ => verdict.to_string(),
     };
-    let actions = format!("j/k move · {enter} · c comment · t ask · v verify · i artifact · a/x agree/dismiss{regenerate}");
-    let [head, main, foot] = Layout::vertical([Constraint::Length(2), Constraint::Min(0), Constraint::Length(2)]).areas(frame.area());
+    let shown = if app.hide_diff { " · d show diff" } else { "" };
+    let tabs = if app.tabs.terms.is_empty() { "" } else { " · ctrl-q agent" };
+    let step = if app.focus == 0 { "" } else { "l next · h back · " };
+    // A finding's row is the longest: the list of every card is one key away under / there.
+    let contents = if app.item().is_some() { "" } else { " · b contents" };
+    let actions = format!("{step}{here}{shown}{contents} · tab pane{tabs} · / commands · ? help");
+    let [head, main, foot] = Layout::vertical([Constraint::Length(2), Constraint::Min(0), Constraint::Length(1)]).areas(frame.area());
     let publish = [("p", "Publish review", KeyCode::Char('p'), Color::Green)];
     let reserved = publish[0].1.chars().count() as u16 + 8;
     frame.render_widget(ratatui::text::Text::from(header(app, head.width.saturating_sub(reserved))), head);
@@ -817,7 +858,7 @@ fn draw_review(app: &mut App, frame: &mut Frame) {
         app.action_buttons.extend((!source.url.is_empty() && link.width > 0).then_some((link, KeyCode::Char('m'))));
     }
     app.screen = frame.area();
-    let guide = app.panes.guide.min(main.width.saturating_sub(6)).max(6);
+    let guide = if app.outline { app.panes.guide.min(main.width.saturating_sub(6)).max(6) } else { 0 };
     let [left, right] = Layout::horizontal([Constraint::Length(guide), Constraint::Min(0)]).areas(main);
     let diff_hidden = !app.diff_shown();
     if diff_hidden && app.focus == 2 {
@@ -850,7 +891,7 @@ fn draw_review(app: &mut App, frame: &mut Frame) {
     let seam = |x: u16, beside: Rect| Rect::new(x.saturating_sub(1), beside.y, 2, beside.height);
     app.handles.clear();
     if !app.zoom {
-        app.handles.push((seam(right.x, main), Handle::Guide));
+        app.handles.extend(app.outline.then(|| (seam(right.x, main), Handle::Guide)));
         match wide {
             true => app.handles.extend([(seam(picture.x, right), Handle::WideDetail), (seam(bottom.x, right), Handle::WideImage)]),
             false => {
@@ -862,42 +903,49 @@ fn draw_review(app: &mut App, frame: &mut Frame) {
     }
     (app.right_area, app.upper_area) = (right, upper);
 
-    let width = left.width.saturating_sub(2) as usize;
-    let rows: Vec<ratatui::text::Text> = app
-        .rows
-        .iter()
-        .map(|&r| {
-            let mut line = row_line(app, r);
-            let Some(last) = line.spans.pop() else { return line.into() };
-            let lead = line.width();
-            if lead + last.content.chars().count() <= width {
-                line.spans.push(last);
-                return line.into();
+    if app.outline {
+        let width = left.width.saturating_sub(2) as usize;
+        let rows: Vec<ratatui::text::Text> = app
+            .rows
+            .iter()
+            .map(|&r| {
+                let mut line = row_line(app, r);
+                let Some(last) = line.spans.pop() else { return line.into() };
+                let lead = line.width();
+                if lead + last.content.chars().count() <= width {
+                    line.spans.push(last);
+                    return line.into();
+                }
+                let hang = if lead > width / 2 { 4 } else { lead };
+                let mut lines = Vec::new();
+                if hang != lead {
+                    lines.push(Line::from(std::mem::take(&mut line.spans)));
+                }
+                for part in wrap(&last.content, width.saturating_sub(hang).max(1)) {
+                    let mut spans = if lines.is_empty() { std::mem::take(&mut line.spans) } else { vec![Span::raw(" ".repeat(hang))] };
+                    spans.push(Span::styled(part, last.style));
+                    lines.push(Line::from(spans));
+                }
+                lines.into()
+            })
+            .collect();
+        app.row_heights = rows.iter().map(|row| row.height() as u16).collect();
+        let list = List::new(rows)
+            .block(pane("guide", app.focus == 0, false, false))
+            .highlight_style(Style::new().bg(Color::Rgb(48, 54, 68)).add_modifier(Modifier::BOLD));
+        app.list.select(Some(app.sel));
+        frame.render_stateful_widget(list, left, &mut app.list);
+        let above: u16 = app.row_heights.iter().take(app.list.offset()).sum();
+        // The selection is a quiet band; a bar in the pane's left edge says whether the guide has the keys.
+        let before: u16 = app.row_heights.iter().take(app.sel).skip(app.list.offset()).sum();
+        let marker = if app.focus == 0 { accent() } else { Color::DarkGray };
+        for y in (left.y + 1 + before..left.bottom().saturating_sub(1)).take(app.row_heights.get(app.sel).copied().unwrap_or(0) as usize) {
+            if let Some(cell) = frame.buffer_mut().cell_mut(Position::new(left.x, y)).filter(|_| app.sel >= app.list.offset()) {
+                cell.set_symbol("▌").set_fg(marker);
             }
-            let hang = if lead > width / 2 { 4 } else { lead };
-            let mut lines = Vec::new();
-            if hang != lead {
-                lines.push(Line::from(std::mem::take(&mut line.spans)));
-            }
-            for part in wrap(&last.content, width.saturating_sub(hang).max(1)) {
-                let mut spans = if lines.is_empty() { std::mem::take(&mut line.spans) } else { vec![Span::raw(" ".repeat(hang))] };
-                spans.push(Span::styled(part, last.style));
-                lines.push(Line::from(spans));
-            }
-            lines.into()
-        })
-        .collect();
-    app.row_heights = rows.iter().map(|row| row.height() as u16).collect();
-    let list = List::new(rows)
-        .block(pane("guide", app.focus == 0))
-        .highlight_style(match app.focus == 0 {
-            true => Style::new().add_modifier(Modifier::REVERSED),
-            false => Style::new().bg(Color::Rgb(48, 54, 68)).add_modifier(Modifier::BOLD),
-        });
-    app.list.select(Some(app.sel));
-    frame.render_stateful_widget(list, left, &mut app.list);
-    let above: u16 = app.row_heights.iter().take(app.list.offset()).sum();
-    scrollbar(frame, left, app.row_heights.iter().sum::<u16>() as usize, above as usize, app.focus == 0);
+        }
+        scrollbar(frame, left, app.row_heights.iter().sum::<u16>() as usize, above as usize, app.focus == 0);
+    }
     app.areas = if app.zoom { [left, right, Rect::default()] } else { [left, top, bottom] };
 
     app.picture_area = Rect::default();
@@ -916,20 +964,13 @@ fn draw_review(app: &mut App, frame: &mut Frame) {
     app.detail_scroll = app.detail_scroll.min(text.len().saturating_sub(text_area.height.saturating_sub(2) as usize) as u16);
     let picked = app.checked.len();
     let count = format!("{picked} picked");
-    let mut keys: Vec<&str> = match (picked, app.item().map_or(0, |item| item.evidence.len()), app.focus == 1) {
-        (0, _, false) => vec![],
-        (0, 0, _) if app.item().is_some() => vec!["v verify", "i artifact"],
-        (0, 0, _) => vec![],
-        (0, _, _) => vec!["ctrl-o details", "j/k evidence", "v verify", "i artifact", "space pick for v/i"],
-        _ => vec![&count, "v verify", "i artifact"],
-    };
-    keys.extend(app.hide_diff.then_some("d show diff"));
+    let keys: Vec<&str> = if picked == 0 { vec![] } else { vec![&count, "v verify", "i artifact"] };
     let style = match picked {
         0 => Style::new().fg(Color::DarkGray),
         _ => Style::new().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD),
     };
     let hint = Line::styled(fit(&keys, text_area.width), style);
-    let block = pane("detail", app.focus == 1).title_bottom(hint);
+    let block = pane(&app.card_title(), app.focus == 1, app.outline, false).title_bottom(hint);
     let starts = |line: &Line, with: &str| line.spans.first().is_some_and(|span| span.content.starts_with(with));
     app.verdict_row = text.iter().position(|line| starts(line, " a · ")).map(|row| {
         let width = |n: usize| text[row].spans.get(n).map_or(0, |span| span.content.chars().count() as u16);
@@ -990,28 +1031,22 @@ fn draw_review(app: &mut App, frame: &mut Frame) {
         }
     }
     if !diff_hidden {
-        let layout = if app.side { "s stack" } else { "s side by side" };
-        let mut keys = if app.focus == 2 { vec!["c comment", "o open file", "j/k line"] } else { vec![] };
-        keys.extend([layout, "d hide"]);
-        keys.retain(|key| !key.is_empty());
         let files = app.section_files();
         let here = app.diffed.2.get(app.cursor.min(app.diffed.2.len().saturating_sub(1))).map(|mark| mark.file);
-        let title = match here.and_then(|file| Some((files.iter().position(|&(listed, _)| listed == file)?, file))) {
-            Some((n, file)) => {
-                let path = &app.bundle.files[file].path;
-                let room = (bottom.width as usize).saturating_sub(26).max(12);
-                let skipped = path.chars().count().saturating_sub(room);
-                let tail: String = path.chars().skip(skipped).collect();
-                format!("diff · file {} of {} · {}{tail}", n + 1, files.len(), if skipped > 0 { "…" } else { "" })
-            }
+        let title = match here.and_then(|file| files.iter().position(|&(listed, _)| listed == file)).filter(|_| files.len() > 1) {
+            Some(n) => format!("diff · file {} of {}", n + 1, files.len()),
             None => "diff".to_string(),
         };
-        let block = pane(&title, app.focus == 2).title_bottom(Line::styled(fit(&keys, bottom.width), Style::new().fg(Color::DarkGray)));
+        let block = pane(&title, app.focus == 2, true, bottom.y > top.y);
         frame.render_widget(Paragraph::new(lines).block(block), bottom);
         scrollbar(frame, bottom, app.diffed.0.len(), app.scroll as usize, app.focus == 2);
+        // Where the rule over a stacked diff meets the divider of the picture above it.
+        if let Some(cell) = frame.buffer_mut().cell_mut(Position::new(picture.x, bottom.y)).filter(|_| picture.width > 0 && bottom.y > top.y) {
+            cell.set_symbol("┴");
+        }
     }
 
-    app.action_buttons.extend(footer(frame, foot, &generate, &actions, &around));
+    app.action_buttons.extend(footer(frame, foot, &generate, &actions, ""));
 
     if let Some((pane, a, b)) = app.selection.filter(|(_, a, b)| a != b) {
         let (left, right) = match app.areas.get(pane) {
@@ -1102,7 +1137,12 @@ fn draw_review(app: &mut App, frame: &mut Frame) {
             lines.extend([Line::from(offer), Line::raw("")]);
         }
         lines.push(Line::styled("Not sent until you publish the review.", dim));
-        let buttons = [("enter", "Save", KeyCode::Enter), ("esc", "Cancel", KeyCode::Esc)];
+        let mut buttons = vec![("enter", "Save", KeyCode::Enter), ("esc", "Cancel", KeyCode::Esc)];
+        match input.quote {
+            Some(true) => buttons.push(("tab", "Quote the finding: yes", KeyCode::Tab)),
+            Some(false) => buttons.push(("tab", "Quote the finding: no", KeyCode::Tab)),
+            None => {}
+        }
         let (inner, areas) = popup(frame, " Comment ", lines, &buttons);
         app.buttons = areas;
         frame.set_cursor_position(Position::new(inner.x + caret.1, inner.y + 2 + caret.0));
@@ -1152,6 +1192,7 @@ fn draw_review(app: &mut App, frame: &mut Frame) {
             (Mode::Artifact, None) => "Make artifacts for this section's findings".into(),
             (Mode::Ask, Some(item)) => format!("Ask about {}", item.id),
             (Mode::Ask, None) => "Ask about this part of the change".into(),
+            (Mode::Guide, _) => "Review this merge request and write its guide".into(),
         };
         let mut lines = vec![Line::styled(what, heading), Line::raw("")];
         let options = app.options();
@@ -1206,25 +1247,25 @@ pub fn selected_text(buffer: &mut ratatui::buffer::Buffer, left: u16, right: u16
 }
 
 const HELP: &str = "# What this is
-revui walks you through a merge request. An agent writes a guide: the change split into sections in reading order, with findings and decisions attached to the code they are about. You read it, check what matters, and decide.
-The guide never hides code. Anything it left out is listed as \"no section\".
+revui walks you through a merge request. Paste its link and an agent reviews it: a summary first, the change split into parts in reading order, then one finding at a time, each attached to the code it is about. You read, check what matters, and decide.
+It never hides code. Anything the agent left out is shown as \"no part\".
 
-# Reading the guide list
-Numbered rows are parts of the diff: hunks that belong together, the core of the change first and low-signal churn last. Select one to see why it exists and its code.
-Rows under a part are what the review raised about that code. A part with none had nothing to raise.
+# One card at a time
+l goes to the next card and h back: the summary, then each part with the findings under it, then what was already said on the merge request and your own comments.
+Findings arrive while the agent is still reviewing, so you can start reading at once. The top line says what it is on. b shows the list of every card.
 B blocker · F should fix · S suggestion · Q question or a decision the change made · G good call
 
 # A review, start to finish
-1. Pick a merge request from the list. g writes a guide when it has none.
-2. Read the sections top to bottom.
+1. Paste a merge request or pull request link. The agent starts in its own tab: ctrl-q shows it, and it may ask you to allow a command.
+2. Read the summary, then step through with l.
 3. On each finding, a says you agree and x dismisses it. On a decision, a accepts the choice and x pushes back.
-4. Not convinced? v has an agent try to reproduce it, i asks for a diagram or screenshot, t just asks a question.
+4. Not convinced? t asks the agent that did the review, v has it reproduce the finding, i asks for a diagram or screenshot. The first time a check needs the product running, the agent asks where: a local stack, a preview deploy, staging.
 5. c adds your own comment, on a finding or on a line of the diff (tab to the diff, move to the line, c).
 6. p publishes your review. You see exactly what would be posted first, and confirm.
 
 # Getting around
-tab moves between panes, enter goes into one, o opens the file or the artifact.
-/ lists every command. , opens settings. q or esc goes back. ctrl-c quits.";
+tab moves between panes, o opens the file or the artifact, ctrl-q switches to the agent and back.
+/ lists every command. , opens settings. q or esc goes back to your reviews. ctrl-c quits.";
 
 pub fn draw_help(frame: &mut Frame) -> Vec<(Rect, KeyCode)> {
     let width = frame.area().width.saturating_sub(4).min(84).saturating_sub(6).max(10) as usize;

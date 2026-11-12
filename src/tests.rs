@@ -13,6 +13,7 @@ fn demo_bundle_surfaces_hunks_the_guide_left_out() {
     assert_eq!(bundle.groups.last().unwrap().len(), 1);
 
     let mut app = App::new(bundle, Picker::halfblocks());
+    (app.outline, app.focus) = (true, 0);
     app.panes = Panes::default();
     assert!(matches!(app.rows[app.sel], Row::Overview) && !app.diff_shown(), "a guide opens on its overview");
     let overview: String = detail(&app, 80).iter().map(|(line, _)| format!("{line}\n")).collect();
@@ -128,6 +129,7 @@ fn a_merge_request_without_a_guide_opens_as_its_plain_diff() {
     let patch = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/demo/mr.patch")).unwrap();
     mrs::sample().write_bundle(&dir, &patch).unwrap();
     let mut app = App::new(Bundle::load(&dir).unwrap(), Picker::halfblocks());
+    (app.outline, app.focus) = (true, 0);
     std::fs::remove_dir_all(&dir).unwrap();
     app.panes = Panes { side: false, ..Panes::default() };
     assert_eq!(app.bundle.groups.len(), 2);
@@ -141,7 +143,7 @@ fn a_merge_request_without_a_guide_opens_as_its_plain_diff() {
     let command = app.command("true", Mode::Verify, true);
     let env: Vec<_> = command.get_envs().map(|(k, v)| format!("{}={}", k.display(), v.unwrap().display())).collect();
     assert!(env.contains(&"REVUI_FILE_URL=https://example.com/shop/api/-/blob/5d6e7f8a9b0c/src/submit.ts#L10".to_string()));
-    assert!(env.iter().any(|e| e.starts_with("REVUI_PROMPT=Verify every finding") && e.contains(&*dir.to_string_lossy()) && e.len() < 260));
+    assert!(env.iter().any(|e| e.starts_with("REVUI_PROMPT=Verify every finding") && e.contains(&*dir.to_string_lossy()) && e.contains("where `revui drive` says") && e.len() < 320));
 
     let click = |column, row| MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -192,7 +194,7 @@ fn a_merge_request_without_a_guide_opens_as_its_plain_diff() {
     body(&mut shown, "What breaks. The helper returns early.\n\nFailure path.\n1. First send\n# Suggest\nCount answered rows.", 60);
     let text: Vec<String> = shown.iter().map(|(line, _)| line.to_string()).collect();
     assert_eq!(text, ["What breaks", "The helper returns early.", "", "Failure path", "1. First send", "Suggest", "Count answered rows."]);
-    assert_eq!(ago("2001-02-03T04:05:06.000Z"), "Feb 3");
+    assert_eq!(crate::draw::ago("2001-02-03T04:05:06.000Z"), "Feb 3");
     let epoch = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 - 2 * 3_600;
     let (days, seconds) = (epoch.div_euclid(86_400), epoch.rem_euclid(86_400));
     let z = days + 719_468;
@@ -203,7 +205,7 @@ fn a_merge_request_without_a_guide_opens_as_its_plain_diff() {
     let (d, m) = (doy - (153 * mp + 2) / 5 + 1, if mp < 10 { mp + 3 } else { mp - 9 });
     let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
     let stamp = format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:00Z", seconds / 3_600, seconds % 3_600 / 60);
-    assert_eq!(ago(&stamp), "2h ago", "{stamp}");
+    assert_eq!(crate::draw::ago(&stamp), "2h ago", "{stamp}");
     let press = |code, modifiers| event::KeyEvent::new(code, modifiers);
     let (mut text, mut cursor) = ("fix the retry bug".to_string(), 17);
     edit(&mut text, &mut cursor, press(KeyCode::Left, KeyModifiers::ALT));
@@ -235,6 +237,7 @@ fn bench_moving_through_a_real_guide() {
         let Ok(bundle) = Bundle::load(Path::new(name)) else { continue };
         let start = std::time::Instant::now();
         let mut app = App::new(bundle, Picker::halfblocks());
+    (app.outline, app.focus) = (true, 0);
         println!("{name}: open {:?}, {} rows", start.elapsed(), app.rows.len());
         let start = std::time::Instant::now();
         while app.incoming.is_some() {
@@ -265,6 +268,7 @@ fn notes_land_on_the_diff_and_in_the_review_text() {
         std::fs::copy(source.join(file), dir.join(file)).unwrap();
     }
     let mut app = App::new(Bundle::load(&dir).unwrap(), Picker::halfblocks());
+    (app.outline, app.focus) = (true, 0);
     app.threads_rx = None;
     app.panes = Panes::default();
     let finding = app.rows.iter().position(|r| matches!(r, Row::Item(_))).unwrap();
@@ -276,6 +280,40 @@ fn notes_land_on_the_diff_and_in_the_review_text() {
     app.key(KeyCode::Char('a'));
     assert!(app.state.notes.is_empty() && app.input.is_none(), "clearing the mark removes the comment that came with it");
     app.key(KeyCode::Char('x'));
+    let mut reason = app.input.take().expect("dismissing offers a note too");
+    assert_eq!((reason.title.as_str(), reason.quote), ("Why you dismiss B1 (optional)", Some(false)));
+    reason.text = "Handled upstream".into();
+    app.submit_note(reason);
+    let points = app.points();
+    assert_eq!((points.len(), points[0].text.as_str()), (1, "Handled upstream"), "a dismissed finding sends only the comment");
+    app.key(KeyCode::Char('x'));
+    app.key(KeyCode::Char('x'));
+    let mut reason = app.input.take().unwrap();
+    reason.text = "Handled upstream".into();
+    reason.quote = Some(true);
+    app.submit_note(reason);
+    let points = app.points();
+    assert!(points.len() == 1 && points[0].text.starts_with("> **A retry can create the order twice**") && points[0].text.ends_with("\n\nHandled upstream"), "unless you ask for the quote");
+    app.key(KeyCode::Char('a'));
+    let kept = app.input.take().expect("changing the mark opens the comment that is there");
+    assert_eq!((kept.text.as_str(), kept.edit, kept.quote), ("Handled upstream", Some(0), Some(true)));
+    app.submit_note(Input { quote: Some(false), ..kept });
+    let points = app.points();
+    assert_eq!((points.len(), points[0].text.as_str(), points[0].line.is_some()), (1, "Handled upstream", true), "an agreed finding can go out as the comment alone, on its line");
+    app.key(KeyCode::Char('a'));
+    assert!(app.state.notes.is_empty() && app.state.quotes.is_empty());
+    app.key(KeyCode::Char('a'));
+    let silent = app.input.take().unwrap();
+    app.submit_note(Input { quote: Some(false), ..silent });
+    assert!(app.points().is_empty() && app.state.notes.is_empty(), "agreed, no quote, no comment: nothing goes out");
+    app.key(KeyCode::Char('x'));
+    let silent = app.input.take().unwrap();
+    app.submit_note(Input { quote: Some(true), ..silent });
+    let points = app.points();
+    assert!(points.len() == 1 && points[0].text.starts_with("> **A retry") && points[0].text.lines().all(|line| line.starts_with('>')), "dismissed with the quote on: the quote goes out alone");
+    app.key(KeyCode::Char('x'));
+    app.key(KeyCode::Char('x'));
+    app.input = None;
     app.key(KeyCode::Char('R'));
     assert_eq!(app.state.verdicts.len(), 1, "one R only asks");
     app.key(KeyCode::Char('j'));
@@ -285,6 +323,12 @@ fn notes_land_on_the_diff_and_in_the_review_text() {
     app.key(KeyCode::Char('R'));
     assert!(app.state.verdicts.is_empty(), "R twice discards every mark");
     app.key(KeyCode::Char('a'));
+    let mut terminal = Terminal::new(TestBackend::new(140, 60)).unwrap();
+    terminal.draw(|f| draw(&mut app, f)).unwrap();
+    assert!(format!("{}", terminal.backend()).contains("tab · Quote the finding: yes"), "the comment popup says whether the finding is quoted");
+    let (toggle, code) = *app.buttons.last().unwrap();
+    assert_eq!(code, KeyCode::Tab);
+    assert!(toggle.width > 0);
     let mut reason = app.input.take().expect("agreeing offers a note");
     reason.text = "Seen this in prod last month".into();
     app.submit_note(reason);
@@ -336,7 +380,7 @@ fn notes_land_on_the_diff_and_in_the_review_text() {
     assert!(input.title.starts_with("Comment on src/submit.ts:"));
     input.text = "Needs an idempotency key".into();
     app.submit_note(input);
-    let typing = |text: &str| Input { title: String::new(), text: text.into(), cursor: text.chars().count(), note: Note::default(), edit: None };
+    let typing = |text: &str| Input { title: String::new(), text: text.into(), cursor: text.chars().count(), note: Note::default(), quote: None, edit: None };
     app.bundle.review.sources[0].author = "@sam".into();
     assert_eq!(app.mention(&typing("thanks @s")), Some((7, vec!["sam".to_string()])));
     assert!(app.mention(&typing("mail@s")).is_none() && app.mention(&typing("@sam")).is_none() && app.mention(&typing("@zed")).is_none());
@@ -411,10 +455,55 @@ fn control_keys_reach_a_tab_as_the_byte_a_terminal_sends() {
     assert_eq!((control(' '), control('['), control(']')), (0x00, 0x1b, 0x1d));
 }
 
+
 #[test]
-fn approvals_are_read_from_both_hosts() {
-    let reply = r#"{"data":{"project":{"mergeRequests":{"nodes":[{"iid":"7","approvedBy":{"nodes":[{"username":"alex"},{"username":"lee"}]}},{"iid":"8","approvedBy":{"nodes":[]}}]}}}}"#;
-    let found = crate::mrs::gitlab_approvals(reply);
-    assert_eq!((found[&7].clone(), found[&8].len()), (vec!["alex".to_string(), "lee".to_string()], 0));
-    assert!(crate::mrs::gitlab_approvals("not json").is_empty());
+fn a_review_is_read_one_card_at_a_time() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/demo");
+    let mut app = App::new(Bundle::load(&dir).unwrap(), Picker::halfblocks());
+    app.panes = Panes::default();
+    assert!(matches!(app.rows[app.sel], Row::Overview) && app.focus == 1 && !app.outline, "it opens on the summary, with no list beside it");
+    let total = app.rows.iter().filter(|row| App::steppable(Some(row))).count();
+    assert_eq!(app.card_title(), format!("1 of {total} · summary"));
+    let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    terminal.draw(|f| draw(&mut app, f)).unwrap();
+    let screen = format!("{}", terminal.backend());
+    assert!(screen.contains(&format!("1 of {total} · summary")) && screen.contains("l next") && screen.contains("b contents"));
+    assert!(app.areas[0].width == 0 && app.handles.iter().all(|(_, handle)| *handle != Handle::Guide), "the list of every card is not on screen");
+
+    app.key(KeyCode::Char('h'));
+    assert!(app.sel == 0 && app.note.contains("first card"));
+    app.key(KeyCode::Char('l'));
+    assert!(matches!(app.rows[app.sel], Row::Group(0)) && app.card_title().contains("part 1 of"));
+    app.key(KeyCode::Right);
+    assert!(matches!(app.rows[app.sel], Row::Item(_)) && app.card_title().contains("finding B1"), "a part is followed by its findings: {}", app.card_title());
+    terminal.draw(|f| draw(&mut app, f)).unwrap();
+    assert!(format!("{}", terminal.backend()).contains("a agree · x dismiss"));
+    let mut seen = 3;
+    while app.sel + 1 < app.rows.len() && seen < 99 {
+        let before = app.sel;
+        app.key(KeyCode::Char('l'));
+        seen += (app.sel != before) as usize;
+        assert!(App::steppable(app.rows.get(app.sel)), "stepping never lands on a spacer or a heading");
+        if app.sel == before {
+            break;
+        }
+    }
+    assert_eq!(seen, total, "l walks every card once");
+    app.key(KeyCode::Char('l'));
+    assert!(app.note.is_empty(), "{}", app.note);
+    app.bundle.review.working = "Reviewing part 2 of 3: Retry".into();
+    app.key(KeyCode::Char('l'));
+    assert!(app.note == "Nothing after this yet." && app.card_title().contains(&format!("{total} of {total}+")));
+    app.note.clear();
+    terminal.draw(|f| draw(&mut app, f)).unwrap();
+    assert!(format!("{}", terminal.backend()).contains("Reviewing part 2 of 3: Retry · "), "the header says what the agent is on");
+
+    app.key(KeyCode::Char('b'));
+    terminal.draw(|f| draw(&mut app, f)).unwrap();
+    assert!(app.outline && app.focus == 0 && app.areas[0].width > 0, "b brings the list of every card back");
+    app.key(KeyCode::Char('b'));
+    assert!(!app.outline && app.focus == 1);
+
+    let (ok, report) = app.bundle.check();
+    assert!(!ok && report.contains("still being written"), "a guide that is still marked as being written does not pass the check");
 }

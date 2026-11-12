@@ -9,7 +9,7 @@ mod video;
 mod tests;
 
 use bundle::{Bundle, Finished, Item, Kind, Note, State};
-use draw::{accent, ago, clear_popup, detail, draw, draw_help, draw_palette, editor_area, footer, hunk_lines, popup, popup_selection, rich, scrollbar, set_accent, spinner, ticket, wrap, wrap_code};
+use draw::{accent, clear_popup, detail, draw, draw_help, draw_palette, editor_area, footer, hunk_lines, popup_selection, rich, scrollbar, set_accent, spinner, wrap_code};
 use input::{edit, palette_key, Command, COMMANDS};
 use tabs::{Tab, Tabs};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
@@ -126,6 +126,7 @@ enum Mode {
     Ask,
     Verify,
     Artifact,
+    Guide,
 }
 
 #[derive(Clone, Copy)]
@@ -138,6 +139,8 @@ const SKILL: &str = include_str!("../skill/SKILL.md");
 const DRIVE: &str = include_str!("../skill/DRIVE.md");
 const GUIDE: &str = include_str!("../skill/GUIDE.md");
 const SETUP: &str = include_str!("../SETUP.md");
+/// Where a run happens is the person's choice per repo, kept in the repo's notes: the agent asks once, the first time it matters.
+const WHERE: &str = "Run it off my screen, where `revui drive` says this repo's evidence comes from. Not asked yet: ask me first.";
 pub const SETUP_PROMPT: &str = "Set up revui for me on this machine. Run: revui setup --guide and follow what it prints.";
 
 #[derive(Clone, Copy, Default)]
@@ -156,6 +159,8 @@ struct Input {
     cursor: usize,
     note: Note,
     edit: Option<usize>,
+    /// Whether the finding this comment is on goes out quoted above it. None when there is no finding to quote.
+    quote: Option<bool>,
 }
 
 enum Finish {
@@ -255,6 +260,10 @@ struct App {
     buttons: Vec<(Rect, KeyCode)>,
     confirm: Option<String>,
     job: Option<std::process::Child>,
+    /// The list of every card, beside the card. Off, the screen is one card at a time.
+    outline: bool,
+    /// An agent started here is writing this guide. Holds the name of its tab, which outlives the screen; empty when it runs elsewhere.
+    generating: Option<String>,
     picker: Picker,
     images: HashMap<PathBuf, Option<StatefulProtocol>>,
     videos: HashMap<PathBuf, video::Video>,
@@ -282,7 +291,7 @@ impl App {
             evidence: 0,
             zoom: false,
             panes: Panes::load(),
-            focus: 0,
+            focus: 1,
             detail_scroll: 0,
             list: ListState::default(),
             areas: [Rect::default(); 3],
@@ -336,6 +345,8 @@ impl App {
             buttons: Vec::new(),
             confirm: None,
             job: None,
+            outline: false,
+            generating: None,
             picker,
             images: HashMap::new(),
             videos: HashMap::new(),
@@ -468,15 +479,19 @@ impl App {
             _ => {}
         }
         let cursor = text.chars().count();
-        self.input = Some(Input { title, text, cursor, note, edit });
+        let quote = self.quote_of(&note);
+        self.input = Some(Input { title, text, cursor, note, edit, quote });
     }
 
     fn submit_note(&mut self, input: Input) {
         let text = input.text.trim().to_string();
+        if let (Some(quote), Some(id)) = (input.quote, &input.note.item) {
+            self.state.quotes.insert(id.clone(), quote);
+        }
         match (input.edit, text.is_empty()) {
             (Some(i), true) => drop(self.state.notes.remove(i)),
             (Some(i), false) => self.state.notes[i].text = text,
-            (None, true) => return,
+            (None, true) => {}
             (None, false) => self.state.notes.push(Note { text, posted: false, ..input.note }),
         }
         self.state.finished = None;
@@ -484,21 +499,40 @@ impl App {
         self.rebuild_rows();
     }
 
+    /// An item that goes out on its own when you publish: a finding you agreed with, a decision you pushed back on.
+    fn raised(&self, item: &Item) -> bool {
+        let verdict = self.state.verdicts.get(&item.id).map(String::as_str);
+        matches!((item.kind, verdict), (Kind::Finding, Some("agree")) | (Kind::Decision, Some("dismiss")))
+    }
+
+    /// Whether an item's text goes out as a quote above your comments on it. Unless you chose, raised items are quoted and the rest are not.
+    pub(crate) fn quoted(&self, id: &str) -> bool {
+        let raised = || self.bundle.review.items.iter().any(|item| item.id == id && self.raised(item));
+        self.state.quotes.get(id).copied().unwrap_or_else(raised)
+    }
+
+    /// The quote choice a comment popup offers: none for a reply or a comment that is not on an item.
+    pub(crate) fn quote_of(&self, note: &Note) -> Option<bool> {
+        note.item.as_ref().filter(|_| note.reply_to.is_none()).map(|id| self.quoted(id))
+    }
+
     fn points(&self) -> Vec<Point> {
         let mut points = Vec::new();
         for item in &self.bundle.review.items {
-            let verdict = self.state.verdicts.get(&item.id).map(String::as_str);
-            let raise = matches!((item.kind, verdict), (Kind::Finding, Some("agree")) | (Kind::Decision, Some("dismiss")));
-            if raise && !self.state.published.contains(&item.id) {
+            let notes: Vec<&Note> = self.state.notes.iter().filter(|note| !note.posted && note.item.as_ref() == Some(&item.id)).collect();
+            let quote = self.quoted(&item.id);
+            if (quote || !notes.is_empty()) && !self.state.published.contains(&item.id) {
                 let (file, line) = item.at.as_ref().map_or((None, None), |at| (Some(at.file.clone()), Some(at.line)));
-                let quoted = item.body.trim().lines().map(|line| match line.strip_prefix("# ") {
-                    Some(label) => format!("> **{label}**"),
-                    None => format!("> {line}").trim_end().to_string(),
-                });
-                let mut text = format!("> **{}**\n>\n{}", item.title, quoted.collect::<Vec<_>>().join("\n"));
-                for note in self.state.notes.iter().filter(|note| !note.posted && note.item.as_ref() == Some(&item.id)) {
-                    text += &format!("\n\n{}", note.text);
+                let mut parts = Vec::new();
+                if quote {
+                    let quoted = item.body.trim().lines().map(|line| match line.strip_prefix("# ") {
+                        Some(label) => format!("> **{label}**"),
+                        None => format!("> {line}").trim_end().to_string(),
+                    });
+                    parts.push(format!("> **{}**\n>\n{}", item.title, quoted.collect::<Vec<_>>().join("\n")));
                 }
+                parts.extend(notes.iter().map(|note| note.text.clone()));
+                let text = parts.join("\n\n");
                 points.push(Point { heading: String::new(), text, file, line, start: None, old: false, reply_to: None, item: Some(item.id.clone()) });
             }
         }
@@ -572,6 +606,55 @@ impl App {
         self.diffed = self.build_diff();
         self.cursor = self.diffed.1;
         self.scroll = self.diffed.1.saturating_sub(8) as u16;
+    }
+
+    /// Cards are what you step through: the summary, each part, each finding under it, then the conversation.
+    fn steppable(row: Option<&Row>) -> bool {
+        !matches!(row, None | Some(Row::Spacer | Row::Heading))
+    }
+
+    fn card(&mut self, delta: i32) {
+        let mut next = self.sel as i32 + delta;
+        while next >= 0 && (next as usize) < self.rows.len() && !App::steppable(self.rows.get(next as usize)) {
+            next += delta;
+        }
+        if next < 0 || next as usize >= self.rows.len() {
+            self.note = match (delta > 0, self.bundle.review.working.trim().is_empty()) {
+                (false, _) => "This is the first card.".into(),
+                (true, false) => "Nothing after this yet.".into(),
+                (true, true) => String::new(),
+            };
+            return;
+        }
+        self.select(next as usize);
+        if self.focus != 0 {
+            self.focus = 1;
+        }
+    }
+
+    /// Where this card is in the walk, and what it is: "3 of 9 · finding B1".
+    pub(crate) fn card_title(&self) -> String {
+        let total = self.rows.iter().filter(|row| App::steppable(Some(row))).count();
+        let place = self.rows.iter().take(self.sel + 1).filter(|row| App::steppable(Some(row))).count();
+        let what = match self.rows.get(self.sel) {
+            Some(Row::Overview) => "summary".to_string(),
+            Some(&Row::Group(g)) if g < self.bundle.review.sections.len() => format!("part {} of {}", g + 1, self.bundle.review.sections.len()),
+            Some(Row::Group(_)) => "code in no part".to_string(),
+            Some(&Row::Item(i)) => {
+                let item = &self.bundle.review.items[i];
+                let kind = match item.kind {
+                    Kind::Finding => "finding",
+                    Kind::Decision => "decision",
+                    Kind::Good => "good call",
+                };
+                format!("{kind} {}", item.id)
+            }
+            Some(Row::Thread(_)) => "already said on the merge request".to_string(),
+            Some(Row::Note(_)) => "your comment".to_string(),
+            _ => String::new(),
+        };
+        let more = if self.bundle.review.working.trim().is_empty() { "" } else { "+" };
+        format!("{place} of {total}{more} · {what}")
     }
 
     fn build_diff(&self) -> Diff {
@@ -716,12 +799,20 @@ impl App {
         serde_json::from_str(&saved).ok()
     }
 
+    /// One agent per review: its tab is named for the merge request, so two reviews never share a conversation.
+    fn tab_name(&self, agent: &mrs::Agent) -> String {
+        match self.bundle.review.sources.first().filter(|s| !s.reference.is_empty()) {
+            Some(s) => format!("{} {}{}", agent.name, s.repo.rsplit('/').next().unwrap_or(""), s.reference),
+            None => agent.name.clone(),
+        }
+    }
+
     fn options(&self) -> Vec<(String, Target)> {
         let agents = mrs::agents();
         let session = self.session();
         let saved = |agent: &mrs::Agent| session.as_ref().is_some_and(|s| s.agent == agent.name && !s.id.is_empty());
         let existing = |agent: &mrs::Agent| {
-            let tab = self.tabs.terms.iter().position(|tab| tab.name == agent.name);
+            let tab = self.tabs.terms.iter().position(|tab| tab.name == self.tab_name(agent));
             match (agent.modal, tab) {
                 (true, Some(tab)) => Some(format!("Tab {}: {}, already open", tab + 1, agent.name)),
                 (true, None) if agent.resume.is_some() && saved(agent) => Some(format!("{}: pick up the earlier conversation", agent.name)),
@@ -802,12 +893,17 @@ impl App {
         };
         let guide = format!("the revui guide at {dir} (run `revui skill` first)");
         let prompt = match (mode, fresh) {
+            // A guide for an earlier head is updated into the bundle of the current one, which `revui fetch` already made.
+            (Mode::Guide, _) => {
+                let into = self.bundle.successor.as_ref().unwrap_or(&self.bundle.dir).display().to_string();
+                format!("Review {url} and write its revui guide into {into}. Run `revui skill guide` first and follow it.")
+            }
             (Mode::Ask, true) => format!("I'm reviewing {url} with {guide}. About {looking_at}: "),
             (Mode::Ask, false) => format!("About {looking_at}: "),
-            (Mode::Verify, true) => format!("Verify {target} in {guide}. Reproduce it locally, off my screen."),
-            (Mode::Verify, false) => format!("Verify {target}. Reproduce it locally, off my screen."),
-            (Mode::Artifact, true) => format!("Make an artifact for {target} in {guide}. If it needs a run, recreate it locally, off my screen."),
-            (Mode::Artifact, false) => format!("Make an artifact for {target}. If it needs a run, recreate it locally, off my screen."),
+            (Mode::Verify, true) => format!("Verify {target} in {guide}. {WHERE}"),
+            (Mode::Verify, false) => format!("Verify {target}. {WHERE}"),
+            (Mode::Artifact, true) => format!("Make an artifact for {target} in {guide}. If it needs a run: {WHERE}"),
+            (Mode::Artifact, false) => format!("Make an artifact for {target}. If it needs a run: {WHERE}"),
         };
         let (session, session_id) = self.session().map_or((String::new(), String::new()), |s| (s.handle, s.id));
         let first_hunk = place.and_then(|(file, _)| file.hunks.first()).map_or("", |hunk| hunk.header.as_str());
@@ -935,6 +1031,11 @@ impl App {
         if !self.bundle.review.sections.is_empty() {
             let _ = std::fs::copy(dir.join("review.json"), dir.join("review.before.json"));
         }
+        if !mrs::generate_configured() {
+            // The review's own agent writes the guide, so the conversation you ask in afterwards is the one that did the review.
+            self.pending = Some(KeyCode::F(8));
+            return;
+        }
         let mut sh = std::process::Command::new("sh");
         sh.args(["-c", &command]).env("REVUI_CLAUDE", mrs::claude()).env("REVUI_URL", &self.bundle.review.sources[0].url).env("REVUI_DIR", dir);
         let spawned = match mrs::generate_settings().1 {
@@ -964,6 +1065,12 @@ impl App {
     }
 
     fn tick(&mut self) {
+        if self.generating.as_ref().is_some_and(|tab| !tab.is_empty() && !self.tabs.has(tab)) {
+            (self.generating, self.busy) = (None, None);
+            if self.bundle.review.sections.is_empty() || !self.bundle.review.working.trim().is_empty() {
+                self.note = "The agent closed before the guide was finished. g picks it up again.".into();
+            }
+        }
         if self.in_tab && !self.tabs.has("guide") {
             (self.in_tab, self.busy) = (false, None);
             self.note = "The guide tab closed before a new guide landed.".into();
@@ -1100,7 +1207,7 @@ fn open_file(terminal: &mut DefaultTerminal, app: &mut App, wait_for_editor: boo
         }
         (true, None) => {}
         (false, _) => match term::Term::spawn(&app.command(&script, Mode::Ask, true), area.height, area.width) {
-            Ok(term) => app.tabs.terms.push(Tab { name: "editor".into(), term, born: std::time::Instant::now(), typing: None }),
+            Ok(term) => app.tabs.terms.push(Tab { name: "editor".into(), term, born: std::time::Instant::now(), typing: None, submit: false, typed: None }),
             Err(e) => app.note = format!("Could not start the editor: {e}"),
         },
     }
@@ -1199,13 +1306,16 @@ fn launch(terminal: &mut DefaultTerminal, app: &mut App, mode: Mode, target: Tar
     let Some(agent) = agents.get(index) else { return };
     if agent.modal {
         let area = editor_area(terminal.size().map(Rect::from).unwrap_or_default());
-        let existing = app.tabs.terms.iter().position(|tab| tab.name == agent.name);
+        let name = app.tab_name(agent);
+        let submit = mode == Mode::Guide;
+        let existing = app.tabs.terms.iter().position(|tab| tab.name == name);
         let saved = app.session().filter(|s| s.agent == agent.name && !s.id.is_empty());
         match (existing, reuse, &saved, &agent.resume) {
             (Some(i), true, _, _) => {
                 let command = app.command(&agent.run, mode, false);
                 let prompt = command.get_envs().find(|(key, _)| *key == "REVUI_PROMPT").and_then(|(_, value)| value);
                 app.tabs.terms[i].term.type_text(&prompt.unwrap_or_default().to_string_lossy());
+                (app.tabs.terms[i].submit, app.tabs.terms[i].typed) = (submit, submit.then(std::time::Instant::now));
                 app.tabs.active = i;
             }
             (_, resuming, saved, resume) => {
@@ -1228,7 +1338,7 @@ fn launch(terminal: &mut DefaultTerminal, app: &mut App, mode: Mode, target: Tar
                 let prompt = command.get_envs().find(|(key, _)| *key == "REVUI_PROMPT").and_then(|(_, value)| value);
                 let typing = (!sends_itself).then(|| prompt.unwrap_or_default().to_string_lossy().into_owned());
                 match term::Term::spawn(&command, area.height, area.width) {
-                    Ok(term) => app.tabs.terms.push(Tab { name: agent.name.clone(), term, born: std::time::Instant::now(), typing }),
+                    Ok(term) => app.tabs.terms.push(Tab { name, term, born: std::time::Instant::now(), submit: submit && typing.is_some(), typing, typed: None }),
                     Err(e) => return app.note = format!("Could not start the {} agent: {e}", agent.name),
                 }
                 app.tabs.active = app.tabs.terms.len() - 1;
@@ -1381,12 +1491,12 @@ pub fn wait<T: Send>(
 
 pub fn enter() -> DefaultTerminal {
     let terminal = ratatui::init();
-    let _ = ratatui::crossterm::execute!(std::io::stdout(), event::EnableMouseCapture);
+    let _ = ratatui::crossterm::execute!(std::io::stdout(), event::EnableMouseCapture, event::EnableBracketedPaste);
     terminal
 }
 
 pub fn leave() {
-    let _ = ratatui::crossterm::execute!(std::io::stdout(), event::DisableMouseCapture);
+    let _ = ratatui::crossterm::execute!(std::io::stdout(), event::DisableMouseCapture, event::DisableBracketedPaste);
     ratatui::restore();
     let _ = ratatui::crossterm::execute!(std::io::stdout(), ratatui::crossterm::cursor::Show);
 }
@@ -1416,14 +1526,22 @@ fn picker() -> Picker {
     picker
 }
 
-pub fn review(terminal: &mut DefaultTerminal, bundle: Bundle, images: Picker, tabs: Tabs) -> std::io::Result<Tabs> {
+/// `start` has the agent begin reviewing at once, when there is no guide yet: the link was just pasted.
+pub fn review(terminal: &mut DefaultTerminal, bundle: Bundle, images: Picker, tabs: Tabs, start: bool) -> std::io::Result<Tabs> {
     let mut guide = bundle.dir.join("review.json");
     let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
     let mut stamp = modified(&guide);
     let mut app = App::new(bundle, images.clone());
     app.tabs = tabs;
-    if app.bundle.successor.is_some() {
+    let unfinished = |app: &App| app.bundle.review.sections.is_empty() || !app.bundle.review.working.trim().is_empty();
+    let running = mrs::agents().first().map(|agent| app.tab_name(agent)).filter(|name| app.tabs.has(name));
+    if unfinished(&app) {
+        app.generating = running;
+    }
+    if app.bundle.successor.is_some() && app.generating.is_none() {
         app.ask_to_generate();
+    } else if start && app.bundle.review.sections.is_empty() && app.generating.is_none() {
+        app.generate(mrs::generate_command());
     }
     let mut redraw = true;
     let mut queued: Option<Event> = None;
@@ -1468,7 +1586,7 @@ pub fn review(terminal: &mut DefaultTerminal, bundle: Bundle, images: Picker, ta
         let code = match app.pending.take() {
             Some(code) => code,
             None => {
-                if queued.is_none() && !event::poll(std::time::Duration::from_millis(if app.tabs.shown { 30 } else if app.videos.values().any(video::Video::playing) { (1000.0 / video::FPS) as u64 / 2 } else if app.incoming.is_some() || app.threads_rx.is_some() { 40 } else if app.note.starts_with("Copied ") { 150 } else if app.busy.is_some() { 100 } else { 500 }))? {
+                if queued.is_none() && !event::poll(std::time::Duration::from_millis(if app.tabs.shown { 30 } else if app.videos.values().any(video::Video::playing) { (1000.0 / video::FPS) as u64 / 2 } else if app.incoming.is_some() || app.threads_rx.is_some() { 40 } else if app.note.starts_with("Copied ") { 150 } else if app.busy.is_some() || !app.bundle.review.working.is_empty() { 100 } else { 500 }))? {
                     redraw = !app.tabs.shown || app.tabs.terms.iter().fold(false, |changed, tab| tab.term.changed() | changed);
                     app.tick();
                     let newer = app.bundle.successor.clone().filter(|dir| mrs::has_guide(dir));
@@ -1480,19 +1598,42 @@ pub fn review(terminal: &mut DefaultTerminal, bundle: Bundle, images: Picker, ta
                         (app.job, app.tabs) = (job, tabs);
                         app.note = "Loaded the guide for the current head.".into();
                     }
-                    if modified(&guide) != stamp {
+                    // A guide written in stages lands many times. Wait while something is being typed or chosen, and keep the reader's place.
+                    let composing = app.input.is_some() || app.finish.is_some() || app.menu.is_some() || app.palette.is_some() || app.confirm.is_some();
+                    if modified(&guide) != stamp && !composing {
                         stamp = modified(&guide);
                         if let Ok(mut bundle) = Bundle::load(&app.bundle.dir) {
                             bundle.successor = app.bundle.successor.clone();
                             let (job, tabs) = (app.job.take(), std::mem::take(&mut app.tabs));
                             let (row, focus, in_tab) = (app.rows.get(app.sel).copied(), app.focus, app.in_tab);
+                            let on = app.item().map(|item| item.id.clone());
+                            let known: Vec<String> = app.bundle.review.items.iter().map(|item| item.id.clone()).collect();
+                            let (was_empty, was_working) = (app.bundle.review.sections.is_empty(), !app.bundle.review.working.trim().is_empty());
+                            let view = (app.detail_scroll, app.scroll, app.cursor, app.evidence);
+                            let kept = (app.outline, app.hide_diff, app.zoom, std::mem::take(&mut app.opened), std::mem::take(&mut app.checked), app.generating.take());
                             app = App::new(bundle, images.clone());
                             (app.job, app.tabs, app.in_tab) = (job, tabs, in_tab);
-                            if let Some(same) = row.and_then(|row| app.rows.iter().position(|other| *other == row)) {
+                            (app.outline, app.hide_diff, app.zoom, app.opened, app.checked, app.generating) = kept;
+                            let same = match &on {
+                                Some(id) => app.rows.iter().position(|row| matches!(row, Row::Item(i) if app.bundle.review.items[*i].id == *id)),
+                                None => row.filter(|_| !was_empty).and_then(|row| app.rows.iter().position(|other| *other == row)),
+                            };
+                            if let Some(same) = same {
                                 app.select(same);
-                                app.focus = focus;
+                                app.focus = if focus == 0 && !app.outline { 1 } else { focus };
+                                (app.detail_scroll, app.scroll, app.cursor, app.evidence) = view;
                             }
-                            app.note = "Guide loaded.".into();
+                            let new: Vec<&str> = app.bundle.review.items.iter().map(|item| item.id.as_str()).filter(|id| !known.iter().any(|old| old == id)).collect();
+                            let whole = !unfinished(&app);
+                            if whole {
+                                app.generating = None;
+                            }
+                            app.note = match (was_empty, new.len(), whole && was_working) {
+                                (true, _, _) => "The summary and the parts are in. l steps through them; findings arrive as they are found.".into(),
+                                (_, _, true) => format!("The review is finished: {} items.", app.bundle.review.items.len()),
+                                (_, 0, _) => "Guide updated.".into(),
+                                (_, _, _) => format!("New: {}. l steps to the next card.", new.join(", ")),
+                            };
                         }
                     }
                     continue;
@@ -1516,6 +1657,13 @@ pub fn review(terminal: &mut DefaultTerminal, bundle: Bundle, images: Picker, ta
                     app.tabs.handle(event);
                     continue;
                 }
+                if let (Event::Paste(text), Some(input)) = (&event, app.input.as_mut()) {
+                    let mut chars: Vec<char> = input.text.chars().collect();
+                    let at = input.cursor.min(chars.len());
+                    chars.splice(at..at, text.chars());
+                    (input.text, input.cursor) = (chars.into_iter().collect(), at + text.chars().count());
+                    continue;
+                }
                 let offered = app.input.as_ref().and_then(|input| app.mention(input));
                 if let (Event::Key(key), Some(input)) = (&event, app.input.as_mut()) {
                     let quitting = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
@@ -1524,6 +1672,10 @@ pub fn review(terminal: &mut DefaultTerminal, bundle: Bundle, images: Picker, ta
                         let name: Vec<char> = format!("@{} ", names[0]).chars().collect();
                         chars.splice(*at..input.cursor.min(chars.len()), name.iter().copied());
                         (input.text, input.cursor) = (chars.into_iter().collect(), at + name.len());
+                        continue;
+                    }
+                    if key.kind == KeyEventKind::Press && key.code == KeyCode::Tab {
+                        input.quote = input.quote.map(|quote| !quote);
                         continue;
                     }
                     if key.kind == KeyEventKind::Press && !quitting && !matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
@@ -1596,6 +1748,10 @@ pub fn review(terminal: &mut DefaultTerminal, bundle: Bundle, images: Picker, ta
             match code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => app.submit_note(input),
+                KeyCode::Tab => {
+                    input.quote = input.quote.map(|quote| !quote);
+                    app.input = Some(input);
+                }
                 KeyCode::Backspace => {
                     input.text.pop();
                     app.input = Some(input);
@@ -1676,6 +1832,16 @@ pub fn review(terminal: &mut DefaultTerminal, bundle: Bundle, images: Picker, ta
         match code {
             KeyCode::Char('/') => (app.palette, app.palette_cursor) = (Some((String::new(), 0)), 0),
             KeyCode::Char('?') => app.help = true,
+            KeyCode::F(8) => {
+                let target = app.options()[0].1;
+                let agent = mrs::agents().into_iter().next();
+                launch(terminal, &mut app, Mode::Guide, target);
+                if app.note.is_empty() || app.note.starts_with("Started") {
+                    let tab = agent.filter(|agent| agent.modal).map(|agent| app.tab_name(&agent)).unwrap_or_default();
+                    app.generating = Some(tab);
+                    app.busy = Some("The agent is reading the change. The summary lands here first".into());
+                }
+            }
             KeyCode::F(12) if app.tabs.terms.is_empty() => app.note = "No agent or editor is open: t starts an agent, enter opens a file.".into(),
             KeyCode::F(12) => app.tabs.open(),
             KeyCode::Char(n @ '1'..='9') if (n as usize - '1' as usize) < app.tabs.terms.len() => {
@@ -1742,7 +1908,8 @@ pub fn review(terminal: &mut DefaultTerminal, bundle: Bundle, images: Picker, ta
             }
             code => {
                 if !app.key(code) {
-                    app.tabs.terms.retain(|tab| tab.name == "settings" || tab.name.starts_with("guide"));
+                    let writing = app.generating.take().unwrap_or_default();
+                    app.tabs.terms.retain(|tab| tab.name == "settings" || tab.name.starts_with("guide") || tab.name == writing);
                     return Ok(app.tabs);
                 }
             }
@@ -1811,7 +1978,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         (Some("help" | "--help" | "-h"), _) => {
             println!(
-                "revui                   pick an open merge request\n\
+                "revui                   paste a link to start a review, or pick up an earlier one\n\
+                 revui <mr url>          start, or pick up, the review of that merge request\n\
                  revui <dir>             open a bundle\n\
                  revui <dir> --export    print the reviewer's verdicts\n\
                  revui fetch <mr url>    create the bundle for a merge request, print its directory\n\
@@ -1834,7 +2002,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {}
     }
-    let dir = args.iter().find(|a| !a.starts_with("--"));
+    let named = args.iter().find(|a| !a.starts_with("--"));
+    let link = named.and_then(|named| mrs::link(named));
+    let dir = named.filter(|_| link.is_none());
     let bundle = dir.map(|d| Bundle::load(Path::new(d))).transpose()?;
     if let (Some(bundle), true) = (&bundle, args.iter().any(|a| a == "--export")) {
         print!("{}", bundle.export(&bundle.load_state()));
@@ -1843,8 +2013,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = enter();
     let images = picker();
     let result = match bundle {
-        Some(bundle) => review(&mut terminal, bundle, images, Tabs::default()).map(|_| ()),
-        None => mrs::browse(&mut terminal, images),
+        Some(bundle) => review(&mut terminal, bundle, images, Tabs::default(), false).map(|_| ()),
+        None => mrs::browse(&mut terminal, images, link),
     };
     leave();
     Ok(result?)

@@ -1,21 +1,17 @@
 # Configuring revui
 
 Everything lives in one JSON file, `~/.config/revui/config.json`. `,` inside
-revui opens it in a tab, and `revui doctor` checks it. Every key is optional
-except the repos to list.
+revui opens it in a tab, and `revui doctor` checks it. Every key is optional:
+with none, pasting a link reviews it with Claude Code in a tab.
 
 | Key | What it sets | Default |
 | --- | --- | --- |
-| `repos` | Projects to list. `group/project` is GitLab, `github.com/owner/repo` is GitHub. | none |
-| `groups` | GitLab groups: every project under each one. | none |
-| `host` | `"github"` makes a plain `owner/repo` mean GitHub. | GitLab |
 | `claude` | The command that starts Claude Code, available to every command as `$REVUI_CLAUDE`. | `claude` |
-| `generate`, `generate_modal` | What `g` runs to write a guide, and whether it runs in a tab. | the bundled `revui-guide` skill, in a tab |
-| `agents` | Where `t`, `v` and `i` open a coding agent. | Claude Code in a tab |
+| `agents` | The coding agent that reviews, and that `t`, `v` and `i` ask. | Claude Code in a tab |
+| `generate`, `generate_modal` | A command of your own that writes guides, in place of the review's agent, and whether it runs in a tab. | not set |
 | `open`, `open_more`, `open_modal` | What `o` runs to open a file. | the line on the web |
 | `drive` | How agents should drive a browser or app on this machine. | they pick a background tool |
 | `accent` | The highlight colour: a name or a hex value such as `"#d77757"`. | `cyan` |
-| `linear_key` | A Linear API key (Linear > Settings > Security & access), to group the Issues view by project. Also read from `$LINEAR_API_KEY`. | none |
 
 `REVUI_HOME=<dir>` keeps the config and all data in that one folder instead, for
 a second setup or a sandbox.
@@ -34,33 +30,53 @@ pasting text into the command line:
 | `$REVUI_SOCKET` | a socket path that is stable for the session, for editors that take remote commands |
 | `$REVUI_CLAUDE` | the `claude` setting |
 
+## Your reviews
+
+revui opens on a paste box over the reviews you have started, the latest first.
+Paste a merge request or pull request link, or run `revui <link>`, and the review
+starts. Typing a few letters filters the list. There is nothing to configure: the
+list is the bundles under `~/.local/share/revui/`, one per head commit, and a
+merge request shows once however many heads it has had.
+
+Opening a review asks the code host whether the head moved. When it did, the
+earlier guide opens with an offer to update it for the new commits.
+
 ## Writing guides
 
-Press `g` in a review or on the list, or ask your agent for `/revui-guide <merge request or pull request URL>`.
-An open review reloads when the guide lands. `g` runs the `generate` command from the
-config, with the merge request in `$REVUI_URL`. The default runs Claude Code in a
-tab inside revui, so you can watch it and answer its prompts; `ctrl-q` goes back
-to the review while it works. Your own `generate` runs in the background unless
-you add `"generate_modal": true`. To run it elsewhere:
+Pasting a link starts the review's agent on it. `g` does the same in a review
+that has no guide, and regenerates one that has. The agent is the first entry of
+`agents`, in its tab: it is told to run `revui skill guide` and follow it, so no
+skill has to be installed and any coding agent can do it. `ctrl-q` shows the
+agent, which may ask you to allow a command, and goes back to the review.
+
+The guide is written in stages. The summary and the parts land first, then each
+finding as it is found, and the open review picks each one up without moving you
+from the card you are on. The top line says what the agent is on until it is done.
+
+To write guides with something else (a team's own review skill, a CI job), set
+`generate` to a command. It gets the merge request in `$REVUI_URL` and the bundle
+in `$REVUI_DIR`, and runs in the background unless you add `"generate_modal": true`:
 
     "generate": "tmux new-window \"claude '/revui-guide $REVUI_URL'\""
 
-Any agent can write a guide: `revui format` prints the format, and
+Anything can write a guide: `revui format` prints the format, and
 `revui check <dir>` validates the result.
 
 ## Agents
 
-`t` starts a companion agent that has read the guide and knows what you are
-looking at, so you can ask it about the change. `v` asks it to verify the finding
+Each review has one agent: the one that wrote its guide. `t` goes to it, already
+told what you are looking at, so you can ask it about the change. `v` asks it to verify the finding
 under the cursor (or a section's unproven findings) by running something, and to
 record the result in the guide: `confirmed` with observed evidence, or
 `unreproduced`. The open review reloads when the agent saves. To verify specific
 claims, pick evidence entries first with `space` or a click: the detail pane's
 bottom edge shows how many are picked, and `v` sends just those.
 
-Pressing `t` or `v` again goes to the companion that is already running for this
-merge request. `T` and `V` let you choose instead: the running companion, or a new
-agent in any of the places you configured.
+Pressing `t` or `v` again goes to the agent that is already running for this
+merge request, or picks its conversation up again if it was quit. `T` and `V` let
+you choose instead: that agent, or a new one in any of the places you configured.
+An agent that is still writing a guide keeps running when you go back to your
+reviews; one that is idle is closed, and resumed the next time you ask.
 
 Where an agent opens is the `agents` list in the config. The first entry is the
 default. Out of the box there is one, which runs Claude Code in a full-screen tab
@@ -126,17 +142,29 @@ session. For Neovim, which then shows each file as a tab:
 
 ## How agents drive the product
 
-`v` and `i` ask an agent to reproduce something locally, off your screen. Say how
-in `"drive"`: one or two sentences naming what to use here (your terminal app's
-browser, Playwright, `agent-desktop`, a local-stack skill). Agents read it with
-`revui drive`. Unset, they pick a background tool they can find and ask before
-anything that would take the screen.
+`v` and `i` ask the agent to reproduce something, off your screen. Two things
+decide how.
+
+**Where it runs** is per repo, and the agent asks once: the first time a check
+needs the product running, it asks where the change runs (a local stack, or a
+preview deploy of the branch) and where today's behaviour is read from (the base
+commit locally, or staging or production, read only), with what it found in the
+repo and on the merge request as suggestions. The answer is kept under
+`## Evidence` in that repo's notes, `~/.local/share/revui/notes/<repo>.md`, which
+you can edit. Saying otherwise in a request ("check this one on staging") wins for
+that request. A deployed environment only has merged code, so it is never used to
+show what an unmerged change does.
+
+**What drives it** is per machine. Say it in `"drive"`: one or two sentences naming
+what to use here (your terminal app's browser, Playwright, `agent-desktop`, a
+local-stack skill). Agents read both with `revui drive`. Unset, they pick a
+background tool they can find and ask before anything that would take the screen.
 
 The how is a second bundled skill, `revui-drive` (`revui skill drive` prints it,
 `revui skill install` installs it with the other). It is generic: it finds the
 local stack from the repo, picks a driving tool from what `revui drive` reports on
-the machine, and keeps short notes per repo in `~/.local/share/revui/notes/`, so
-the start command and sign-in are worked out once. A project's own skill for
+the machine, and adds what it learns to the same notes file, so the start command
+and sign-in are worked out once. A project's own skill for
 running its product still wins when there is one.
 
 A third bundled skill, `revui-guide`, is what `g` runs by default: it reviews the

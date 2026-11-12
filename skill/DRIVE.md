@@ -14,11 +14,32 @@ Run `revui drive <bundle dir>`. It prints:
 
 - **The person's preference**, if they set one. Follow it over everything below.
 - **The driving tools on this machine**, each with the command that prints its own manual.
+- **Where evidence comes from** for this repo: where the person wants runs to happen. See the next step when it says "not asked yet".
 - **Notes for this repo** left by earlier runs: how to start it, sign in and reach a feature.
 
 Then check for a project skill or doc that runs or drives this product (your skill list, the repo's `CLAUDE.md` or `AGENTS.md`). If one exists, use it for the product-specific steps and use this skill only for what it leaves out.
 
-## 2. Pick the tool
+## 2. Know where evidence comes from
+
+A run needs two places, and the person chooses both, once per repo:
+
+- **Change**: where this merge request's code runs. A deployed environment only has merged code, so this is a local stack at the head, or a preview deploy of the branch when the merge request has one.
+- **Baseline**: where today's behaviour is read from, for a before and after or to show a bug that is already there. The base commit run locally, or a deployed environment (staging, production) that you only read.
+
+When `revui drive` says "not asked yet", ask before the first run, in one question, with what you found as the suggested answers:
+
+- for **change**: a compose file, a dev script or an end-to-end test config in the repo; a preview or review-app link on the merge request (its deployments, bot comments, pipeline environments);
+- for **baseline**: a staging or production URL in the README, the env examples or the CI config.
+
+Then write the answer into the notes file `revui drive` named, under a `## Evidence` heading, as two lines: `Change: ...` and `Baseline: ...`, each with the URL or start command and how to sign in. Nobody is asked twice.
+
+After that:
+
+- What the person says in a request wins for that request ("check this one on staging"). Do not rewrite the notes for a one-off.
+- A deployed environment is read-only: look, query, take screenshots. Never create, change or delete data there, and never use it to show what this change does unless the branch is deployed to it.
+- A claim that needs neither place (a unit test, a script against the code) needs no question: run it in the scratch worktree.
+
+## 3. Pick the tool
 
 Take the first that `revui drive` found and that fits the target. Read the tool's own manual before the first call: do not guess flags.
 
@@ -32,20 +53,20 @@ Take the first that `revui drive` found and that fits the target. Read the tool'
 
 Never attach to the browser or profile the person uses, and never bring a window to the front. If the only way left is visible and takes focus, stop and ask.
 
-## 3. Get the product running locally
+## 4. Get the product running
 
-- Start from the notes `revui drive` printed. With none, read the README, `Makefile`, `package.json` scripts, compose files, `.env` examples and the end-to-end test config: together they give the start command, the base URL and how tests sign in.
+- Run where step 2 says. For a local run, start from the notes `revui drive` printed. With none, read the README, `Makefile`, `package.json` scripts, compose files, `.env` examples and the end-to-end test config: together they give the start command, the base URL and how tests sign in.
 - Run the merge request's head in a scratch worktree, never in the person's checkout. Before starting anything, check whether the ports are taken: a stack the person is running is theirs. Use it only to read, and only if it is on the right commit.
 - Sign in with the test credentials the repo provides (env files, test fixtures). Never use the person's own account or password manager unless they say so, and never write a secret into the bundle.
-- Use a shared environment (dev, UAT) only when the claim is about that environment or the person said to.
+- Use a shared environment only as step 2 allows: as the baseline, read-only, or because the person said to for this request.
 
-## 4. Drive and capture
+## 5. Drive and capture
 
 - Decide from what the page says (an accessibility snapshot or its text), not from a picture. Take the screenshot afterwards, as the evidence.
 - For a before and after, run the base and the head and capture both.
 - Save captures under the bundle's `assets/`, and add them to the item as `observed` evidence with the exact steps as `repro` (see the `revui` skill). If you could not reach the state the claim is about, say so: a screenshot of something nearby is not evidence.
 
-## 5. Leave it as you found it
+## 6. Leave it as you found it
 
 - Close the browsers and stop the servers you started. Remove the scratch worktree.
 - Append what you learned to the notes file `revui drive` named: the start command, the URL, how sign-in works, what tripped you up. Short facts, no secrets. The next run reads them, so nobody works it out twice.

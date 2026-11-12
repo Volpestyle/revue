@@ -8,6 +8,9 @@ pub struct Review {
     pub title: String,
     #[serde(default)]
     pub summary: String,
+    /// What the generator is reviewing right now. Set while the guide is still being written, gone when it is whole.
+    #[serde(default)]
+    pub working: String,
     pub sources: Vec<Source>,
     pub sections: Vec<Section>,
     #[serde(default)]
@@ -133,6 +136,9 @@ pub struct State {
     pub finished: Option<Finished>,
     #[serde(default)]
     pub published: BTreeSet<String>,
+    /// Per item, whether its text goes out as a quote above your comments. Unset follows the verdict.
+    #[serde(default)]
+    pub quotes: BTreeMap<String, bool>,
 }
 
 #[derive(Default, Serialize, Deserialize, Clone)]
@@ -261,6 +267,9 @@ impl Bundle {
     pub fn check(&self) -> (bool, String) {
         let sections = self.review.sections.len();
         let mut problems = Vec::new();
+        if !self.review.working.trim().is_empty() {
+            problems.push("still being written: remove `working` once the last part is reviewed".to_string());
+        }
         for &(fi, hi) in self.groups[sections..].iter().flatten() {
             problems.push(format!("no section: {} hunk {hi}", self.files[fi].path));
         }

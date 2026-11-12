@@ -8,29 +8,21 @@ Run `revui doctor` first. It prints the config file's path and what is missing. 
 
 Look first, then ask. Find out what you can from the machine, and put the questions to the person in one message, each with what you found as the suggested answer:
 
-1. Which projects do you review, and on which host? (step 1)
-2. Which coding agent do you use, and how do you start it? (step 2)
-3. Should agents open in a tab inside revui, or in a pane of the terminal app you are in? (step 2)
-4. Which editor should files open in? (step 3)
-5. Does your team have its own review skill, or should the bundled one write guides? (step 4)
-6. How may an agent run the product and drive a browser without taking over your screen? (step 5)
+1. Which coding agent do you use, and how do you start it? (step 2)
+2. Should it open in a tab inside revui, or in a pane of the terminal app you are in? (step 2)
+3. Which editor should files open in? (step 3)
+4. Does your team have its own review skill, or should the review's agent write guides? (step 4)
+5. How may an agent run the product and drive a browser without taking over your screen? (step 5)
 
 Do not ask what the machine already answers, and do not write a key for anything they left at the default.
 
-## 1. Which merge requests to list
+## 1. The code host
 
-Ask which projects they review, and on which host. To suggest some, look at what they are already involved in:
-
-    glab mr list --reviewer=@me -F json -P 50
-    gh search prs --review-requested=@me --state=open
-
-Write them into `repos`: a GitLab project as its full path, a GitHub repo as `github.com/owner/repo`. If everything is on GitHub, set `"host": "github"` and write plain `owner/repo`. Use `groups` only when they want every project under a GitLab group: it lists up to 100 merge requests per group.
-
-    { "repos": ["group/subgroup/project", "github.com/owner/repo"], "groups": [] }
+There are no repos to list: the person pastes the link of a merge request or pull request and revui reviews it. That needs the host's CLI, signed in: `glab` for GitLab, `gh` for GitHub. `revui doctor` says which is missing. Do not sign in for them: tell them the command (`gh auth login`, `glab auth login`).
 
 ## 2. Where an agent opens
 
-`t` (ask) and `v` (verify) start a coding agent from the `agents` list. The first entry is the default. With no `agents` key, revui runs Claude Code in a tab inside itself, which works everywhere, so only write this key when the person wants something else. Ask which coding agent they use and where they like it to open.
+Each review has one coding agent, from the `agents` list: it reviews the merge request when its link is pasted, and `t` (ask) and `v` (verify) go back to it. The first entry is the default. With no `agents` key, revui runs Claude Code in a tab inside itself, which works everywhere, so only write this key when the person wants something else. Ask which coding agent they use and where they like it to open.
 
 See where revui is running before you ask, so you can offer what applies:
 
@@ -88,24 +80,19 @@ If their agent is started through a wrapper script, check how the wrapper passes
 
       "open": "code -g \"$HOME/src/$REVUI_REPO/$REVUI_FILE\":$REVUI_LINE"
 
-## 4. Generating guides
+## 4. Writing guides
 
-`g` runs `generate` with the merge request in `$REVUI_URL`. The default runs Claude Code with `/revui-guide $REVUI_URL` in a tab inside revui, using a skill revui bundles:
+With nothing set, the review's agent writes the guide: revui tells it to run `revui skill guide` and follow it, so there is nothing to install and any coding agent can do it. Leave it that way unless they ask for something else.
 
-- Run `revui skill install`. It installs three skills: `revui-guide`, which reviews a merge request or pull request and writes its guide; `revui`, for reading and updating bundles; and `revui-drive`, for running the product and driving its UI in the background.
-- If their team has its own review skill, it can write guides too by following `revui format`. Then set `generate` to call it.
-- An agent that is not Claude Code has no `/revui-guide` command, but every skill is one command away: `revui skill guide` prints the guide-writing skill, `revui skill` the bundle skill and `revui skill drive` the driving skill. Put that in the prompt:
-
-      "generate": "cursor-agent \"Run 'revui skill guide' and follow it for $REVUI_URL\"", "generate_modal": true
-
-If they want the run somewhere else, point `generate` at the same kind of pane command as in step 2, with `/revui-guide $REVUI_URL` as the prompt. A custom `generate` runs in the background; add `"generate_modal": true` to keep it in a revui tab.
+- `revui skill install` is optional. It installs three Claude Code skills, so that any session outside revui can work on a bundle too: `revui-guide`, which reviews a merge request or pull request and writes its guide; `revui`, for reading and updating bundles; and `revui-drive`, for running the product.
+- If their team has its own review skill or a job that should write guides instead, set `generate` to the command. It gets the merge request in `$REVUI_URL` and the bundle in `$REVUI_DIR`, and has to follow `revui format`, including "Writing in stages". It runs in the background; add `"generate_modal": true` to run it in a tab inside revui.
 
 ## 5. How agents drive a browser or app
 
-`v` (verify) and `i` (artifact) can have an agent reproduce something in the running product. Ask how that should happen on this machine without taking over their screen, and write it as one or two plain sentences in `"drive"`. Agents read it with `revui drive`. Run `revui drive` to see what this machine has: a terminal app with its own browser (Herdr Browser, Orca), Playwright or headless Chrome, `agent-desktop` for native apps. Check for a project skill that runs the local stack too. An in-app browser is the best answer when they have one: the agent works in a pane they can watch, with its own profile, and never touches their browser.
+`v` (verify) and `i` (artifact) can have an agent reproduce something in the running product. Where that runs (a local stack, a preview deploy, staging) is not set here: the agent asks per repo, the first time a check needs it. Ask only how it should drive things on this machine without taking over their screen, and write it as one or two plain sentences in `"drive"`. Agents read it with `revui drive`. Run `revui drive` to see what this machine has: a terminal app with its own browser (Herdr Browser, Orca), Playwright or headless Chrome, `agent-desktop` for native apps. Check for a project skill that runs the local stack too. An in-app browser is the best answer when they have one: the agent works in a pane they can watch, with its own profile, and never touches their browser.
 
     { "drive": "Web pages: Playwright, headless. Local stack: the run-local skill. Never the system browser." }
 
 ## 6. Finish
 
-Run `revui doctor` until it exits 0. Then tell the person, in a few lines: which repos are listed, where agents and files will open, and that `,` inside revui opens this config again.
+Run `revui doctor` until it exits 0. Then tell the person, in a few lines: that pasting a link starts a review, where the agent and files will open, and that `,` inside revui opens this config again.

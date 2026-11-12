@@ -12,6 +12,9 @@ pub struct Tab {
     pub(crate) term: term::Term,
     pub(crate) born: std::time::Instant,
     pub(crate) typing: Option<String>,
+    /// Send what was typed instead of leaving it for the person to finish. Holds the moment it was typed.
+    pub(crate) submit: bool,
+    pub(crate) typed: Option<std::time::Instant>,
 }
 
 #[derive(Default)]
@@ -80,7 +83,7 @@ impl Tabs {
         if !self.has(name) {
             let area = editor_area(screen);
             let term = term::Term::spawn(command, area.height, area.width)?;
-            self.terms.push(Tab { name: name.into(), term, born: std::time::Instant::now(), typing });
+            self.terms.push(Tab { name: name.into(), term, born: std::time::Instant::now(), typing, submit: false, typed: None });
         }
         if let Some(i) = self.terms.iter().position(|tab| tab.name == name) {
             (self.active, self.shown) = (i, true);
@@ -93,7 +96,12 @@ impl Tabs {
             let settled = tab.born.elapsed().as_millis() > 1500 && tab.term.quiet_for().as_millis() > 500;
             if settled || tab.born.elapsed().as_secs() > 10 {
                 tab.term.type_text(&tab.typing.take().unwrap_or_default());
+                tab.typed = tab.submit.then(std::time::Instant::now);
             }
+        }
+        for tab in self.terms.iter_mut().filter(|tab| tab.typed.is_some_and(|at| at.elapsed().as_millis() > 400)) {
+            (tab.typed, tab.submit) = (None, false);
+            tab.term.submit();
         }
         let young = self.terms.iter_mut().filter(|tab| tab.born.elapsed().as_secs() < 3);
         let failed = young.filter_map(|tab| tab.term.failed().then(|| tab.name.clone())).collect();
@@ -144,6 +152,7 @@ impl Tabs {
                     false => self.terms[self.active].term.input(key),
                 }
             }
+            Event::Paste(text) => self.terms[self.active].term.type_text(&text),
             Event::Mouse(m) => match m.kind {
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                     (self.selection, self.copied) = (None, None);
